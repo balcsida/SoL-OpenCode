@@ -1,5 +1,6 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 
@@ -8,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_REDUCER_MODEL, DEFAULT_REDUCER_PROVIDER } from "../src/config.ts";
 
 const SCRIPT = join(process.cwd(), "scripts/check-sol-pi-config.mjs");
 
@@ -36,8 +38,8 @@ function run(config: string, requireAllEnabled = true) {
 	});
 }
 
-const DEFAULT_EPR_PROVIDER = ["openai", "codex"].join("-");
-const DEFAULT_EPR_MODEL = ["gpt-5.6", "luna"].join("-");
+const DEFAULT_EPR_PROVIDER = DEFAULT_REDUCER_PROVIDER;
+const DEFAULT_EPR_MODEL = DEFAULT_REDUCER_MODEL;
 
 const ALL_ENABLED = {
 	version: 1,

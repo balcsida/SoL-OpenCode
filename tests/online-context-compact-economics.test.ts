@@ -1,5 +1,6 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import {
 	DEFAULT_COMPACTION_ECONOMICS,
 	decideCompaction,
 	estimateRemainingRequests,
-} from "../src/sol-pi/extensions/online-context-compact/economics.ts";
+} from "../src/online-context-compact/economics.ts";
 
 function decision(overrides: Partial<Parameters<typeof decideCompaction>[0]> = {}) {
 	return decideCompaction({

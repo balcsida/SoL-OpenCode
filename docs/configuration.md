@@ -1,16 +1,17 @@
 # Configuration
 
-SoL-Pi reads one effective JSON configuration file at extension startup. It uses Pi's public `CONFIG_DIR_NAME` and `getAgentDir()` APIs rather than assuming fixed directories.
+SoL-OpenCode reads one effective configuration when the plugin loads. Every mechanism is disabled unless the configuration enables it.
 
-## Search order
+## Sources
 
-1. `<working-directory>/<Pi config directory>/sol-pi.json`, only after Pi marks the project trusted
-2. `<Pi agent directory>/sol-pi.json`
-3. Built-in defaults when neither file exists
+The first source that exists wins. Sources are never merged.
 
-For the official Pi distribution, the first two locations normally resolve to `.pi/sol-pi.json` and `~/.pi/agent/sol-pi.json`.
+1. **Plugin options.** Any non-empty `options` object on the plugin's entry in `opencode.json(c)`. The options must be a complete configuration in the schema below.
+2. `<location directory>/.opencode/sol-pi.json`, where the location directory is the project OpenCode runs in.
+3. `<OpenCode config directory>/sol-pi.json`. The directory is `$OPENCODE_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/opencode`, normally `~/.config/opencode`.
+4. Built-in defaults, with everything disabled.
 
-The project file replaces the global file. SoL-Pi does not merge them.
+OpenCode v2 has no project-trust concept and loads code from `.opencode/plugins/` automatically. The project file is therefore read without a trust check: a project that can ship `sol-pi.json` can already ship a plugin.
 
 ## Schema
 
@@ -20,56 +21,55 @@ The project file replaces the global file. SoL-Pi does not merge them.
   "actionFusion": false,
   "observationPack": false,
   "evidencePreservingReducer": false,
-  "evidencePreservingReducerProvider": "provider-id",
-  "evidencePreservingReducerModel": "model-id",
+  "evidencePreservingReducerProvider": "openai",
+  "evidencePreservingReducerModel": "gpt-5.6-luna",
   "onlineContextCompact": false,
   "cacheWriteReadRatio": 12.5
 }
 ```
 
-Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
+The schema is SoL-Pi's.
 
-For the managed all-enabled installation described in the [agent installation and configuration protocol](../agents-install.md), validate the effective file before starting Pi:
+- **`version`:** must be `1`.
+- **Feature keys:** may be omitted and then default to `false`.
+- **`cacheWriteReadRatio`:** defaults to `12.5`. When present it must be a finite, non-negative number; `0` explicitly means a cache write adds no cost relative to a cache read.
+- **`evidencePreservingReducerProvider` / `evidencePreservingReducerModel`:** default to `openai` / `gpt-5.6-luna`, OpenCode's counterpart of SoL-Pi's `openai-codex/gpt-5.6-luna`. When present each must be a non-empty string. Surrounding whitespace is removed.
+- **Fatal errors:** unknown keys, an unsupported version, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer fields all stop the plugin from loading, with a direct error.
+
+Validate a file before starting OpenCode:
 
 ```bash
-node scripts/check-sol-pi-config.mjs \
-  --config /absolute/path/to/effective/sol-pi.json \
-  --require-all-enabled
+node scripts/check-sol-pi-config.mjs --config /absolute/path/to/sol-pi.json
+node scripts/check-sol-pi-config.mjs --config /absolute/path/to/sol-pi.json --require-all-enabled
 ```
-
-This preflight does not make every valid SoL-Pi configuration all-enabled. Without `--require-all-enabled`, omitted feature keys retain their normal `false` defaults. The managed workflow uses the flag because its acceptance criterion is that all four mechanisms are active.
 
 ## Feature behavior
 
-- `actionFusion`: registers SoL-Pi replacements for Pi's `edit` and `write` tools.
-- `observationPack`: registers `obs_recall` and a provider-context projection handler.
-- `evidencePreservingReducer`: registers a `tool_result` handler and delegates long diagnostic-log reduction to the configured reducer provider/model.
-- `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
-- `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
-- `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
-- `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
+- **`actionFusion`:** adds an optional `then_run: { command, timeout? }` (timeout in milliseconds) to OpenCode's built-in `edit` and `write` tools. After a successful mutation, the command runs through OpenCode's `shell` tool.
+- **`observationPack`:** projects large repeated tool results as placeholders in outgoing requests, and registers `obs_recall`.
+- **`evidencePreservingReducer`:** reduces long diagnostic logs through the configured reducer route, and registers `evidence_recall`.
+- **`evidencePreservingReducerProvider` / `evidencePreservingReducerModel`:** the OpenCode `providerID` and model `id` passed to `ctx.generate.text`. OpenCode resolves the model and its credentials. Never put credentials in `sol-pi.json`.
+- **`onlineContextCompact`:** registers `update_plan` and compacts at completed plan steps when the economic gate or window pressure selects it.
+- **`cacheWriteReadRatio`:** the single ratio Online Context Compact's economic gate uses. It is fixed for the loaded plugin, does not read model prices, and is not a cost report.
 
-## Evidence-Preserving Reducer runtime inputs
+## Runtime inputs
 
-The release entry supplies the run label and session-derived storage. It uses one configurable model route:
+- **Storage:** archives and journals live under `<OpenCode data>/sol-opencode/<sessionID>/`. The data directory is `$XDG_DATA_HOME/opencode`, normally `~/.local/share/opencode`. Online Context Compact state lives in the plugin's `ctx.storage` under `occ/<sessionID>`.
+- **Context window:** read from `ctx.model.list()` for the request's model.
+- **Provider-counted context size:** read from `session.step.ended` events.
 
-- **Reducer provider/model** — from `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` in the effective `sol-pi.json`. If omitted, SoL-Pi uses its built-in reducer route. SoL-Pi resolves that model through Pi's model registry and still relies on Pi-managed authentication; do not put credentials in `sol-pi.json`.
+SoL-OpenCode reads no dedicated environment variables. It follows OpenCode's own `XDG_*` and `OPENCODE_CONFIG_DIR` so that its files sit beside OpenCode's.
 
-## Online Context Compact runtime inputs
+## Example: plugin options
 
-The release entry uses two runtime inputs:
-
-- **Context window** — from `ExtensionContext.getContextUsage()`, used for window-pressure protection.
-- **Cache write/read ratio** — from `cacheWriteReadRatio` in the effective `sol-pi.json`. The value remains fixed for the session and is not recomputed when the model changes. It drives one runtime decision and is not a cost report.
-
-The configured ratio stays fixed for the loaded extension. The mechanism stores its current plan, progress summaries, request horizon, context growth, and compaction debt as versioned custom entries in Pi's session log. After a successful compaction it sends one hidden, generic message with `triggerTurn: true`, which starts a new turn and instructs the assistant to rebuild its plan. A settlement barrier keeps print and JSON modes in the same Pi invocation until that continuation settles, so callers do not need to resume the session or inject `Continue working`. Cancelling or exiting does not schedule an automatic continuation. The mechanism creates no separate Online Context Compact files. The programmatic factory exposes only a matching retained-tail value for installations whose Pi compaction setting differs from the default.
-
-## Pi integration
-
-SoL-Pi reads no dedicated environment variables. Evidence-Preserving Reducer resolves its configured reducer provider/model through `ExtensionContext.modelRegistry` and uses Pi-managed authentication. If the configured reducer model is unavailable or the nested model call fails, the original tool result continues unchanged.
-
-SoL-Pi does not configure shell paths, command prefixes, storage paths, run IDs, provider URLs, reasoning levels, timeouts, or per-mechanism enable flags through environment variables. Apart from the EPR reducer provider/model route in `sol-pi.json`, model selection remains with Pi. Action Fusion uses Pi's default shell behavior. Persistent artifacts are derived from Pi's session directory and session ID.
-
-## Trust
-
-A project-local config can enable file mutation, shell execution, local archival, and remote diagnostic-log reduction. SoL-Pi waits for Pi's `session_start` context and ignores the project file unless `ctx.isProjectTrusted()` is true. Prefer the global file when you want one personal configuration across trusted projects.
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "/absolute/path/to/SoL-OpenCode",
+      "options": { "version": 1, "actionFusion": true, "observationPack": true }
+    }
+  ]
+}
+```

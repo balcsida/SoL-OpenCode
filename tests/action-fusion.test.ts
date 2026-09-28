@@ -1,19 +1,19 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BashOperations, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import {
-	type ActionFusionOptions,
-	assertUnchangedBeforeCommand,
-	createActionFusionExtension,
-} from "../src/sol-pi/extensions/action-fusion/index.ts";
-import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
-import { componentText, plainTheme } from "./helpers.ts";
+import { afterEach, describe, expect, it } from "vitest";
+import { assertUnchangedBeforeCommand, register, withFusedFileQueue } from "../src/action-fusion/index.ts";
+import { DEFAULT_CONFIG } from "../src/config.ts";
+import type { ToolResult } from "../src/context.ts";
+import { editTool, type ShellHandler, shellTool, writeTool } from "./fake-builtins.ts";
+import { type CallOutcome, contextEvent, FakeOpenCode, FakeToolFailure } from "./fake-opencode.ts";
+
+const SESSION = "ses_fusion";
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,313 +27,240 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
-function text(result: { content: Array<{ type: string; text?: string }> }): string {
-	return result.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text ?? "")
-		.join("\n");
+function text(result: ToolResult): string {
+	const content = result.content;
+	if (typeof content === "string") return content;
+	return (content ?? []).flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
 
-type ObjectSchema = { properties: Record<string, unknown>; required?: string[] };
-type FusedTools = { edit: ToolDefinition; write: ToolDefinition };
-
-function objectSchema(tool: ToolDefinition): ObjectSchema {
-	return tool.parameters as unknown as ObjectSchema;
-}
-
-function loadFusedTools(options?: ActionFusionOptions): FusedTools {
-	const registered = new Map<string, ToolDefinition>();
-	const pi = {
-		registerTool: (tool: ToolDefinition) => registered.set(tool.name, tool),
-	} as unknown as ExtensionAPI;
-	createActionFusionExtension(options)(pi);
-	const edit = registered.get("edit");
-	const write = registered.get("write");
-	if (!edit || !write) throw new Error("action fusion did not register edit and write");
-	return { edit, write };
-}
-
-function createContext(cwd: string, overrides: Partial<ExtensionContext> = {}): ExtensionContext {
-	return {
-		mode: "json",
-		hasUI: false,
-		cwd,
-		model: undefined,
-		sessionManager: {
-			getSessionFile: () => undefined,
-			getSessionId: () => "action-fusion-test",
-		},
-		ui: {},
-		...overrides,
-	} as unknown as ExtensionContext;
+function completed(outcome: CallOutcome): ToolResult {
+	if (outcome.status !== "completed") throw new Error(`expected completed, got ${outcome.status}`);
+	return outcome.result;
 }
 
 const tempDirs: string[] = [];
+const cleanups: (() => void)[] = [];
 
 async function createTempDir(): Promise<string> {
-	const dir = await mkdtemp(join(tmpdir(), "pi-then-run-"));
+	const dir = await mkdtemp(join(tmpdir(), "sol-opencode-then-run-"));
 	tempDirs.push(dir);
 	return dir;
 }
 
 afterEach(async () => {
-	vi.useRealTimers();
-	await Promise.all(tempDirs.splice(0, tempDirs.length).map((dir) => rm(dir, { recursive: true, force: true })));
+	for (const cleanup of cleanups.splice(0)) cleanup();
+	await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+async function setup(
+	shell: ShellHandler = async () => ({ output: "", exit: 0 }),
+	options: { onWrite?: (path: string, content: string) => Promise<void> | void; withShell?: boolean } = {},
+) {
+	const dir = await createTempDir();
+	const fake = new FakeOpenCode(dir);
+	fake.seedTool(editTool(dir));
+	fake.seedTool(writeTool(dir, options.onWrite));
+	if (options.withShell !== false) fake.seedTool(shellTool(shell));
+	cleanups.push(await register(fake.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+	return { dir, fake };
+}
+
+function call(id: string) {
+	return { sessionID: SESSION, id, messageID: "msg_1", agent: "build" };
+}
+
 describe("action fusion then_run", () => {
-	it("adds an optional command and timeout object to edit and write", () => {
-		const { edit, write } = loadFusedTools();
+	it("advertises an optional then_run object on edit and write for every request kind", async () => {
+		const { fake } = await setup();
+		for (const kind of ["context", "generate", "compaction"]) {
+			const event = contextEvent(SESSION, [], {
+				tools: {
+					edit: { description: "edit", input: { type: "object", properties: { path: {}, oldString: {}, newString: {} }, required: ["path"] } },
+					write: { description: "write", input: { type: "object", properties: { path: {}, content: {} }, required: ["path", "content"] } },
+					read: { description: "read", input: { type: "object", properties: { path: {} } } },
+				},
+			});
+			const originalWrite = event.tools.write;
+			await fake.runSessionHook(kind, event);
 
-		expect(objectSchema(write).properties.then_run).toMatchObject({
-			type: "object",
-			description:
-				"Command to run next on this file after the write succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.",
-			properties: {
-				command: { type: "string" },
-				timeout: { type: "number" },
-			},
-			required: ["command"],
-		});
-		expect(objectSchema(edit).properties.then_run).toMatchObject({
-			type: "object",
-			description:
-				"Command to run next on this file after the edit succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the edit fails; a non-zero exit is reported but keeps the edit.",
-			properties: {
-				command: { type: "string" },
-				timeout: { type: "number" },
-			},
-			required: ["command"],
-		});
-		expect(objectSchema(write).required).not.toContain("then_run");
-		expect(objectSchema(edit).required).not.toContain("then_run");
+			const write = event.tools.write?.input as { properties: Record<string, unknown>; required: string[] };
+			const edit = event.tools.edit?.input as { properties: Record<string, unknown>; required: string[] };
+			expect(Object.keys(write.properties)).toEqual(["path", "content", "then_run"]);
+			expect(Object.keys(edit.properties)).toEqual(["path", "oldString", "newString", "then_run"]);
+			expect(write.required).toEqual(["path", "content"]);
+			expect(write.properties.then_run).toMatchObject({
+				type: "object",
+				description: expect.stringContaining("optional timeout in milliseconds"),
+				properties: { command: { type: "string" }, timeout: { type: "integer", minimum: 0 } },
+				required: ["command"],
+			});
+			expect(event.tools.read?.input).toEqual({ type: "object", properties: { path: {} } });
+			expect(originalWrite?.input).toEqual({ type: "object", properties: { path: {}, content: {} }, required: ["path", "content"] });
+		}
 	});
 
-	it("keeps the built-in path and content parameters", () => {
-		const { edit, write } = loadFusedTools();
-
-		expect(Object.keys(objectSchema(write).properties)).toEqual(["path", "content", "then_run"]);
-		expect(Object.keys(objectSchema(edit).properties)).toEqual(["path", "edits", "then_run"]);
-		expect(write.name).toBe("write");
-		expect(edit.name).toBe("edit");
-	});
-
-	it.each([
-		{ label: "default checkout name", cwd: join(tmpdir(), "SoL-Pi"), path: "target.ts" },
-		{ label: "unrelated checkout name", cwd: join(tmpdir(), "plain-checkout"), path: "target.ts" },
-		{ label: "repository name in the target path", cwd: join(tmpdir(), "plain-checkout"), path: "SoL-Pi/target.ts" },
-	])("renders a fused mutation as an English lightning savings call ($label)", ({ cwd, path }) => {
-		const { write } = loadFusedTools();
-		const fusedArgs = {
-			path,
-			content: "export {};\n",
-			then_run: { command: "npm test" },
-		};
-		const fused = write.renderCall!(fusedArgs, plainTheme, {
-			cwd,
-			args: fusedArgs,
-		} as never);
-		const plainArgs = { path, content: "export {};\n" };
-		const plain = write.renderCall!(plainArgs, plainTheme, {
-			cwd,
-			args: plainArgs,
-		} as never);
-
-		expect(componentText(fused)).toContain("⚡ SoL-Pi · Action Fusion");
-		expect(componentText(fused)).toContain("Money saved · 1 model round-trip avoided");
-		// A normal path or its OSC 8 hyperlink may contain the repository name.
-		expect(componentText(plain)).not.toContain("⚡ SoL-Pi · Action Fusion");
-		expect(componentText(plain)).not.toContain("Money saved · 1 model round-trip avoided");
-	});
-
-	it("runs write then_run through bash after the written content is visible", async () => {
-		const dir = await createTempDir();
-		const filePath = join(dir, "written.txt");
+	it("removes then_run before the built-in write runs, then runs it after the content is visible", async () => {
 		const commands: string[] = [];
-		const operations: BashOperations = {
-			exec: async (command, cwd, { onData }) => {
-				commands.push(command);
-				expect(cwd).toBe(dir);
-				expect(await readFile(filePath, "utf8")).toBe("new content\n");
-				onData(Buffer.from("write check passed\n"));
-				return { exitCode: 0 };
-			},
-		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
+		let dir = "";
+		const { fake, dir: directory } = await setup(async (input) => {
+			commands.push(input.command);
+			expect(await readFile(join(dir, "written.txt"), "utf8")).toBe("new content\n");
+			return { output: "write check passed\n", exit: 0 };
+		});
+		dir = directory;
 
-		const result = await write.execute(
-			"write-1",
-			{ path: filePath, content: "new content\n", then_run: { command: "check write" } },
-			undefined,
-			undefined,
-			createContext(dir),
+		const outcome = await fake.callTool(
+			"write",
+			{ path: "written.txt", content: "new content\n", then_run: { command: "check write" } },
+			call("write-1"),
 		);
 
+		expect(outcome.status === "completed" && outcome.executedInput).toEqual({ path: "written.txt", content: "new content\n" });
+		const result = completed(outcome);
 		expect(commands).toEqual(["check write"]);
-		expect(text(result)).toContain("[then_run:succeeded]");
-		expect(text(result)).toContain("write check passed");
+		expect(text(result)).toContain("Created file successfully: written.txt");
+		expect(text(result)).toContain("[then_run:succeeded]\nwrite check passed");
+		expect(result.output).toMatchObject({ operation: "write", resource: "written.txt" });
+		expect(result.metadata).toMatchObject({ thenRun: { status: "succeeded", exit: 0 } });
 	});
 
-	it("announces savings only after a fused command succeeds in TUI mode", async () => {
-		const dir = await createTempDir();
-		const notify = vi.fn();
-		const setStatus = vi.fn();
-		const { write } = loadFusedTools({
-			bashOptions: { operations: { exec: async () => ({ exitCode: 0 }) } },
+	it("reads then_run from the recorded call after OpenCode's input repair drops it", async () => {
+		const commands: string[] = [];
+		const { fake } = await setup(async (input) => {
+			commands.push(input.command);
+			return { output: "ok", exit: 0 };
 		});
+		expect(fake.repairInputs).toBe(true);
+		await fake.callTool("write", { path: "a.txt", content: "a", then_run: { command: "recorded" } }, call("w-rec"));
+		expect(commands).toEqual(["recorded"]);
+	});
 
-		await write.execute(
-			"write-tui",
-			{ path: "target.ts", content: "export {};\n", then_run: { command: "npm test" } },
-			undefined,
-			undefined,
-			createContext(dir, { mode: "tui", hasUI: true, ui: { notify, setStatus } as never }),
-		);
+	it("strips then_run itself when it reaches execute.before", async () => {
+		const commands: string[] = [];
+		const { fake } = await setup(async (input) => {
+			commands.push(input.command);
+			return { output: "ok", exit: 0 };
+		});
+		fake.repairInputs = false;
+		fake.sessionContext = async () => {
+			throw new Error("history must not be needed");
+		};
+		const outcome = await fake.callTool("write", { path: "b.txt", content: "b", then_run: { command: "inline" } }, call("w-inl"));
+		expect(outcome.status === "completed" && outcome.executedInput).toEqual({ path: "b.txt", content: "b" });
+		expect(commands).toEqual(["inline"]);
+	});
 
-		expect(notify).toHaveBeenCalledWith(
-			"⚡ SoL-Pi · Action Fusion\nMoney saved · 1 model round-trip avoided",
-			"info",
+	it("runs no command when the recorded call cannot be read", async () => {
+		let shellCalls = 0;
+		const { fake } = await setup(async () => {
+			shellCalls++;
+			return { output: "", exit: 0 };
+		});
+		fake.sessionContext = async () => {
+			throw new Error("store unavailable");
+		};
+		const result = completed(
+			await fake.callTool("write", { path: "c.txt", content: "c", then_run: { command: "lost" } }, call("w-lost")),
 		);
+		expect(shellCalls).toBe(0);
+		expect(text(result)).toBe("Created file successfully: c.txt");
 	});
 
 	it("runs edit then_run after the edited content is visible", async () => {
-		const dir = await createTempDir();
-		const filePath = join(dir, "edited.txt");
-		await writeFile(filePath, "before\n", "utf8");
-		const operations: BashOperations = {
-			exec: async (_command, _cwd, { onData }) => {
-				expect(await readFile(filePath, "utf8")).toBe("after\n");
-				onData(Buffer.from("edit check passed\n"));
-				return { exitCode: 0 };
-			},
-		};
-		const { edit } = loadFusedTools({ bashOptions: { operations } });
+		let dir = "";
+		const { fake, dir: directory } = await setup(async () => {
+			expect(await readFile(join(dir, "edited.txt"), "utf8")).toBe("after\n");
+			return { output: "edit check passed", exit: 0 };
+		});
+		dir = directory;
+		await writeFile(join(dir, "edited.txt"), "before\n");
 
-		const result = await edit.execute(
-			"edit-1",
-			{ path: filePath, edits: [{ oldText: "before", newText: "after" }], then_run: { command: "check edit" } },
-			undefined,
-			undefined,
-			createContext(dir),
+		const result = completed(
+			await fake.callTool(
+				"edit",
+				{ path: "edited.txt", oldString: "before", newString: "after", then_run: { command: "check edit" } },
+				call("edit-1"),
+			),
 		);
-
-		expect(text(result)).toContain("[then_run:succeeded]");
-		expect(text(result)).toContain("edit check passed");
+		expect(text(result)).toContain("[then_run:succeeded]\nedit check passed");
 	});
 
 	it("leaves a mutation without then_run untouched", async () => {
-		const dir = await createTempDir();
-		const filePath = join(dir, "plain.txt");
-		let bashCalls = 0;
-		const operations: BashOperations = {
-			exec: async () => {
-				bashCalls++;
-				return { exitCode: 0 };
-			},
-		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
+		let shellCalls = 0;
+		const { fake, dir } = await setup(async () => {
+			shellCalls++;
+			return { output: "", exit: 0 };
+		});
+		const result = completed(await fake.callTool("write", { path: "plain.txt", content: "plain\n" }, call("write-plain")));
 
-		const result = await write.execute(
-			"write-plain",
-			{ path: filePath, content: "plain\n" },
-			undefined,
-			undefined,
-			createContext(dir),
+		expect(shellCalls).toBe(0);
+		expect(result).toEqual({
+			output: { operation: "write", target: join(dir, "plain.txt"), resource: "plain.txt", existed: false },
+			content: "Created file successfully: plain.txt",
+		});
+		expect(await readFile(join(dir, "plain.txt"), "utf8")).toBe("plain\n");
+	});
+
+	it("keeps a successful mutation and reports a non-zero exit as a failed command", async () => {
+		const { fake, dir } = await setup(async () => ({ output: "validation failed", exit: 7 }));
+		const result = completed(
+			await fake.callTool("write", { path: "preserved.txt", content: "keep me\n", then_run: { command: "exit 7" } }, call("write-2")),
 		);
 
-		expect(bashCalls).toBe(0);
-		expect(text(result)).not.toContain("[then_run:");
-		expect(await readFile(filePath, "utf8")).toBe("plain\n");
+		expect(text(result)).toContain("[then_run:failed]\nvalidation failed");
+		expect(text(result)).toContain("Exited with code 7");
+		expect(result.metadata).toMatchObject({ thenRun: { status: "failed", exit: 7 } });
+		expect(await readFile(join(dir, "preserved.txt"), "utf8")).toBe("keep me\n");
 	});
 
-	it("preserves a successful mutation when then_run fails", async () => {
-		const dir = await createTempDir();
-		const filePath = join(dir, "preserved.txt");
-		const operations: BashOperations = {
-			exec: async (_command, _cwd, { onData }) => {
-				onData(Buffer.from("validation failed\n"));
-				return { exitCode: 7 };
-			},
-		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
-
-		await expect(
-			write.execute(
-				"write-2",
-				{ path: filePath, content: "keep me\n", then_run: { command: "exit 7" } },
-				undefined,
-				undefined,
-				createContext(dir),
-			),
-		).rejects.toThrow("[then_run:failed]");
-		expect(await readFile(filePath, "utf8")).toBe("keep me\n");
+	it("reports a timed-out command as failed", async () => {
+		const { fake } = await setup(async () => ({ output: "partial", exit: undefined, timeout: true }));
+		const result = completed(
+			await fake.callTool("write", { path: "slow.txt", content: "x", then_run: { command: "sleep 99", timeout: 10 } }, call("w-t")),
+		);
+		expect(text(result)).toContain("[then_run:failed]\npartial");
+		expect(text(result)).toContain("Timed out before completion");
 	});
 
-	it("skips then_run and reports it when the mutation fails", async () => {
-		const dir = await createTempDir();
-		let bashCalls = 0;
-		const operations: BashOperations = {
-			exec: async () => {
-				bashCalls++;
-				return { exitCode: 0 };
-			},
-		};
-		const { edit } = loadFusedTools({ bashOptions: { operations } });
+	it("skips then_run and keeps the typed error when the mutation fails", async () => {
+		let shellCalls = 0;
+		const { fake } = await setup(async () => {
+			shellCalls++;
+			return { output: "", exit: 0 };
+		});
+		const outcome = await fake.callTool(
+			"edit",
+			{ path: "missing.txt", oldString: "before", newString: "after", then_run: { command: "must not run" } },
+			call("edit-2"),
+		);
 
-		await expect(
-			edit.execute(
-				"edit-2",
-				{
-					path: "missing.txt",
-					edits: [{ oldText: "before", newText: "after" }],
-					then_run: { command: "must not run" },
-				},
-				undefined,
-				undefined,
-				createContext(dir),
-			),
-		).rejects.toThrow("[then_run:skipped]");
-		expect(bashCalls).toBe(0);
+		expect(outcome.status).toBe("error");
+		if (outcome.status !== "error") return;
+		expect(outcome.error).toBeInstanceOf(FakeToolFailure);
+		expect(outcome.error.message).toBe(
+			"Unable to edit missing.txt\n\n[then_run:skipped] The file mutation did not complete successfully; the command was not run.",
+		);
+		expect(shellCalls).toBe(0);
 	});
 
-	it("keeps the file queue locked through then_run", async () => {
-		const dir = await createTempDir();
-		const filePath = join(dir, "ordered.txt");
+	it("keeps the file queue locked from the mutation through then_run", async () => {
 		const thenRunStarted = deferred();
 		const finishThenRun = deferred();
 		const events: string[] = [];
-		const operations: BashOperations = {
-			exec: async () => {
+		const { fake } = await setup(
+			async () => {
 				events.push("then_run:start");
 				thenRunStarted.resolve();
 				await finishThenRun.promise;
 				events.push("then_run:end");
-				return { exitCode: 0 };
+				return { output: "", exit: 0 };
 			},
-		};
-		const { write } = loadFusedTools({
-			bashOptions: { operations },
-			writeOptions: {
-				operations: {
-					mkdir: async () => {},
-					writeFile: async (path, content) => {
-						events.push(`write:${content}`);
-						await writeFile(path, content);
-					},
-				},
-			},
-		});
-		const ctx = createContext(dir);
-
-		const first = write.execute(
-			"write-3",
-			{ path: filePath, content: "first", then_run: { command: "block" } },
-			undefined,
-			undefined,
-			ctx,
+			{ onWrite: (_path, content) => void events.push(`write:${content}`) },
 		);
+
+		const first = fake.callTool("write", { path: "ordered.txt", content: "first", then_run: { command: "block" } }, call("write-3"));
 		await thenRunStarted.promise;
-		const second = write.execute("write-4", { path: filePath, content: "second" }, undefined, undefined, ctx);
+		const second = fake.callTool("write", { path: "ordered.txt", content: "second" }, call("write-4"));
 		await delay(20);
 		expect(events).toEqual(["write:first", "then_run:start"]);
 
@@ -342,55 +269,103 @@ describe("action fusion then_run", () => {
 		expect(events).toEqual(["write:first", "then_run:start", "then_run:end", "write:second"]);
 	});
 
-	it("passes then_run timeout through to the bash operation", async () => {
-		const dir = await createTempDir();
-		const operations: BashOperations = {
-			exec: async (command, _cwd, { timeout }) => {
-				expect(command).toBe("check with timeout");
-				expect(timeout).toBe(12);
-				return { exitCode: 0 };
-			},
-		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
+	it("passes the command, a millisecond timeout, and the call identity to OpenCode's shell tool", async () => {
+		const seen: unknown[] = [];
+		const { fake } = await setup(async (input, context) => {
+			seen.push({ input, context: { sessionID: context.sessionID, agent: context.agent, messageID: context.messageID, id: context.id } });
+			return { output: "", exit: 0 };
+		});
 
-		const result = await write.execute(
-			"write-timeout",
-			{ path: "timeout.txt", content: "content\n", then_run: { command: "check with timeout", timeout: 12 } },
-			undefined,
-			undefined,
-			createContext(dir),
+		await fake.callTool(
+			"write",
+			{ path: "timeout.txt", content: "content\n", then_run: { command: "check with timeout", timeout: 12_000 } },
+			call("write-timeout"),
 		);
-
-		expect(text(result)).toContain("[then_run:succeeded]");
+		expect(seen).toEqual([
+			{
+				input: { command: "check with timeout", timeout: 12_000 },
+				context: { sessionID: SESSION, agent: "build", messageID: "msg_1", id: "write-timeout" },
+			},
+		]);
 	});
 
-	it("passes the command unchanged to Pi's default bash behavior", async () => {
-		const dir = await createTempDir();
-		const commands: string[] = [];
-		const operations: BashOperations = {
-			exec: async (command) => {
-				commands.push(command);
-				return { exitCode: 0 };
-			},
-		};
-		const { write } = loadFusedTools({ bashOptions: { operations } });
-
-		await write.execute(
-			"write-default-shell",
-			{ path: "default-shell.txt", content: "content\n", then_run: { command: "check default shell" } },
-			undefined,
-			undefined,
-			createContext(dir),
-		);
-
-		expect(commands).toEqual(["check default shell"]);
+	it("reports an invalid then_run without running it or undoing the mutation", async () => {
+		let shellCalls = 0;
+		const { fake, dir } = await setup(async () => {
+			shellCalls++;
+			return { output: "", exit: 0 };
+		});
+		for (const thenRun of [{ command: "" }, { command: "ok", timeout: 1.5 }, { command: "ok", shell: "zsh" }, "npm test"]) {
+			const result = completed(
+				await fake.callTool("write", { path: "invalid.txt", content: "kept\n", then_run: thenRun }, call("write-invalid")),
+			);
+			expect(text(result)).toMatch(/\[then_run:skipped\] invalid then_run: .+; the command was not run\./u);
+			expect(result.metadata).toMatchObject({ thenRun: { status: "skipped" } });
+		}
+		expect(shellCalls).toBe(0);
+		expect(await readFile(join(dir, "invalid.txt"), "utf8")).toBe("kept\n");
 	});
 
-	it("serializes direct uses of the extension queue", async () => {
+	it("skips the command when OpenCode's shell tool is unavailable", async () => {
+		const { fake } = await setup(undefined, { withShell: false });
+		const result = completed(
+			await fake.callTool("write", { path: "no-shell.txt", content: "x", then_run: { command: "npm test" } }, call("write-ns")),
+		);
+		expect(text(result)).toContain("[then_run:skipped] the shell tool is unavailable; the command was not run.");
+	});
+
+	it("reports a rejected shell call, such as a declined permission, as a failed command", async () => {
+		const { fake } = await setup(async () => {
+			throw new Error("The user declined this tool call");
+		});
+		const result = completed(
+			await fake.callTool("write", { path: "declined.txt", content: "x", then_run: { command: "rm -rf /" } }, call("write-d")),
+		);
+		expect(text(result)).toContain("[then_run:failed]\nThe user declined this tool call");
+	});
+
+	it("releases the queue and aborts the command when the session is interrupted", async () => {
+		let aborted = false;
+		const started = deferred();
+		const { fake } = await setup(
+			(_input, context) =>
+				new Promise((resolve) => {
+					started.resolve();
+					context.signal.addEventListener("abort", () => {
+						aborted = true;
+						resolve({ output: "cancelled", exit: 130 });
+					});
+				}),
+		);
+
+		const first = fake.callTool("write", { path: "interrupted.txt", content: "a", then_run: { command: "hang" } }, call("w-i1"));
+		await started.promise;
+		fake.emit({ type: "session.execution.interrupted", data: { sessionID: SESSION } });
+		await first;
+		expect(aborted).toBe(true);
+		expect(completed(await fake.callTool("write", { path: "interrupted.txt", content: "b" }, call("w-i2")))).toBeTruthy();
+	});
+
+	it("releases a queue slot whose execute.after never ran once the session goes idle", async () => {
+		const { fake, dir } = await setup();
+		// A call that dies between execute.before and execute.after holds its slot.
+		const before = { tool: "write", sessionID: SESSION, agent: "build", messageID: "m", id: "w-dead", input: { path: "held.txt", content: "x" } };
+		for (const hook of fake.toolHooks["execute.before"]) await hook(before);
+
+		const blocked = fake.callTool("write", { path: "held.txt", content: "after\n" }, call("w-next"));
+		await delay(20);
+		await expect(readFile(join(dir, "held.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+		fake.emit({ type: "session.idle", data: { sessionID: SESSION } });
+		completed(await blocked);
+		expect(await readFile(join(dir, "held.txt"), "utf8")).toBe("after\n");
+	});
+
+	it("serializes direct uses of the fused queue", async () => {
 		const events: string[] = [];
 		const firstStarted = deferred();
 		const releaseFirst = deferred();
-		const queuePath = join(tmpdir(), "action-fusion-queue");
+		const queuePath = join(tmpdir(), "sol-opencode-action-fusion-queue");
 		const first = withFusedFileQueue(queuePath, async () => {
 			events.push("first:start");
 			firstStarted.resolve();

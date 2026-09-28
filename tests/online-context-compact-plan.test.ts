@@ -1,5 +1,6 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 import { describe, expect, it } from "vitest";
@@ -8,7 +9,7 @@ import {
 	formatPlanSnapshot,
 	parsePlanSteps,
 	type PlanStep,
-} from "../src/sol-pi/extensions/online-context-compact/index.ts";
+} from "../src/online-context-compact/index.ts";
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const satisfies readonly PlanStep[];
 const DONE = [{ id: "build", goal: "build it", status: "completed" }] as const satisfies readonly PlanStep[];

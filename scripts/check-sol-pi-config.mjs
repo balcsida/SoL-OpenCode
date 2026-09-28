@@ -1,5 +1,6 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 
@@ -13,7 +14,8 @@ const FEATURE_KEYS = [
 	"onlineContextCompact",
 ];
 const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
-const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
+// Keep in sync with src/config.ts.
+const DEFAULT_EPR_REDUCER_PROVIDER = "openai";
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
 const CONFIG_KEYS = new Set(["version", ...FEATURE_KEYS, ...STRING_KEYS, "cacheWriteReadRatio"]);

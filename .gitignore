@@ -10,5 +10,6 @@ dist/
 .idea/
 .zed/
 .claude/
-.pi/
 docs/superpowers/plans/
+# Read-only reference clone of NVlabs/SoL-Pi used by the OpenCode port
+upstream/

@@ -1,19 +1,19 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
 import { describe, expect, it } from "vitest";
 import {
-	appendOnlineState,
 	initialOnlineState,
-	ONLINE_STATE_ENTRY,
+	parseOnlineState,
 	recordBoundary,
 	recordCompaction,
 	recordCorrection,
 	recordProviderRequest,
-	restoreOnlineState,
-} from "../src/sol-pi/extensions/online-context-compact/state.ts";
-import { FakePi, FakeSessionManager } from "./helpers.ts";
+} from "../src/online-context-compact/state.ts";
+import { loadSession, saveSession, storageKey } from "../src/online-context-compact/store.ts";
+import { FakeOpenCode } from "./fake-opencode.ts";
 
 const PLAN = [
 	{ id: "inspect", goal: "inspect the implementation", status: "completed" as const },
@@ -48,14 +48,20 @@ describe("Online Context Compact state snapshots", () => {
 		});
 	});
 
-	it("restores the latest valid snapshot and ignores a malformed tail", () => {
-		const manager = new FakeSessionManager();
-		const pi = new FakePi(manager);
+	it("round-trips the latest snapshot through plugin storage and ignores malformed records", async () => {
+		const fake = new FakeOpenCode("/tmp/project");
+		const storage = fake.ctx().storage;
 		const state = recordBoundary(recordProviderRequest(initialOnlineState(), 100), PLAN, PROGRESS);
-		appendOnlineState(pi.asExtensionApi(), state);
-		manager.appendCustomEntry(ONLINE_STATE_ENTRY, { version: 1, plan: "broken" });
+		const checkpoint = { keptMessageID: "msg_kept", summary: "done so far", archivedMessages: 4, createdAt: 1 };
+		await saveSession(storage, "ses_a", { state, checkpoint, lastDecision: undefined });
 
-		expect(restoreOnlineState(manager.entries)).toEqual(state);
+		expect(await loadSession(storage, "ses_a")).toEqual({ state, checkpoint, lastDecision: undefined });
+		expect(fake.storage.has(storageKey("ses_a"))).toBe(true);
+
+		fake.storage.set(storageKey("ses_b"), { schema: "sol-pi-online-context-state-v1", state: { version: 1, plan: "broken" } });
+		expect((await loadSession(storage, "ses_b")).state).toEqual(initialOnlineState());
+		expect((await loadSession(storage, "ses_missing")).checkpoint).toBeUndefined();
+		expect(parseOnlineState({ ...state, requestCount: -1 })).toBeUndefined();
 	});
 
 	it("counts requests, positive context growth, and cache-debt repayment", () => {

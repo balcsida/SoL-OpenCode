@@ -1,98 +1,68 @@
-<p align="center">
-  <img src="assets/sol-pi-hero.png" width="100%" alt="SoL-Pi: Scaling Auto-Research Loops for Efficient Agent Harnesses" />
-</p>
+# SoL-OpenCode
 
-# ⚡ SoL-Pi: Scaling Auto-Research Loops for Efficient Agent Harnesses
+SoL-OpenCode brings [SoL-Pi](https://github.com/NVlabs/SoL-Pi)'s four token-efficiency mechanisms to [OpenCode v2](https://opencode.ai/v2/docs/build/plugins/) as a plugin built on `@opencode/plugin`. It is a port of SoL-Pi, which NVIDIA released under the MIT license for the Pi coding agent. SoL-OpenCode is not an NVIDIA or OpenCode project.
 
-<p align="center">
-  <a href="https://arxiv.org/abs/2609.20519"><img src="https://img.shields.io/badge/arXiv-2609.20519-B31B1B?logo=arxiv&amp;logoColor=white" alt="arXiv: 2609.20519" /></a>
-  <a href="#getting-started"><img src="https://img.shields.io/badge/Getting%20Started-Install-76B900" alt="Getting Started" /></a>
-  <a href="docs/configuration.md"><img src="https://img.shields.io/badge/Docs-Configuration-555555" alt="Configuration" /></a>
-  <a href="https://nvlabs.github.io/SoL-Pi/"><img src="https://img.shields.io/badge/Blog-SoL--Pi-76B900" alt="SoL-Pi Blog" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License" /></a>
-</p>
-
-> [!NOTE]
-> This repository contains the open-source version of SoL-Pi, a standalone extension for [Pi](https://github.com/earendil-works/pi). It is not an official distribution of Pi.
-
-## 💡 TL;DR
-
-**Spend less without making the agent do less useful work.**
-
-SoL-Pi is a standalone extension for Pi that packages four reusable efficiency mechanisms discovered through scaled auto-research loops. It reduces repeated model turns, context replay, oversized observations, and unnecessary long-log reading while preserving the work and evidence an agent needs to finish a task.
-
-SoL-Pi installs on top of an unmodified Pi release. Every mechanism is opt-in and disabled by default.
-
-## Introduction
-
-Long-running coding agents accumulate repeated work. A file edit is often followed by a predictable validation command. Large tool results are replayed long after their first use. Completed subtasks remain in active context, and a frontier model may spend a full request reading a log when only a few lines affect the next decision.
-
-SoL-Pi grew out of a broader question from our auto-research work: before scaling agent loops, can agents first make the harness itself more efficient? The search focused on constrained efficiency: reducing token traffic, inference work, and agent turns without stopping early, skipping verification, or hiding evidence.
-
-The standalone release contains four mechanisms that survived that process. They operate at different parts of the harness and compose through Pi's public extension APIs.
-
-## What SoL-Pi Adds
+**Spend less without making the agent do less useful work.** Each mechanism is opt-in and disabled by default.
 
 | Area | Mechanism | What changes |
 |---|---|---|
-| Tools | **Action Fusion** | An edit or write can run its follow-up validation command in the same tool call. |
-| Observations | **ObservationPack** | Repeated large text results become stable handles with exact paged recall. |
-| Delegation | **Evidence-Preserving Reducer** | Long diagnostic logs become compact receipts only when every retained quotation matches the archived source. |
-| Context | **Online Context Compact** | Completed plan steps become candidate points for Pi's native compaction, subject to economic and window-pressure checks; after a successful compaction, Pi continues the task in a new turn. |
+| Tools | **Action Fusion** | `edit` and `write` accept an optional `then_run` command that runs in the same tool call, through OpenCode's own `shell` tool. |
+| Observations | **ObservationPack** | Large tool results are sent in full twice, then replaced in outgoing requests by a stable placeholder, with exact paged recall through `obs_recall`. |
+| Delegation | **Evidence-Preserving Reducer** | Long diagnostic logs become compact receipts through a reducer model, accepted only when every quote matches the archived source byte for byte. |
+| Context | **Online Context Compact** | Completed plan steps (`update_plan`) become candidate compaction points, subject to an economic check (`cacheWriteReadRatio`) and window pressure. |
 
-The mechanisms share four rules:
+The rules carry over from SoL-Pi:
 
-- **No Pi patches.** SoL-Pi imports public Pi APIs and does not vendor the Pi source tree.
+- **No OpenCode patches.** Only the public `@opencode/plugin` API is used.
 - **Explicit opt-in.** A missing configuration leaves every mechanism disabled.
-- **Preserve evidence.** Original observations remain available locally, and reducer failures leave the original result unchanged.
-- **Use Pi's runtime choices.** Authentication, provider URLs, the main model, and shell behavior remain under Pi's control.
+- **Preserve evidence.** Originals stay archived locally, and any mechanism failure leaves the original result or request unchanged.
+- **Persisted history is never edited.** ObservationPack and Online Context Compact change only the outgoing request.
+- **Use OpenCode's runtime choices.** Authentication, providers, the main model, and the shell stay under OpenCode's control. The reducer and the compaction summary go through `ctx.generate.text` and `ctx.session.generate`.
 
-## Technical Details and Core Insights
+Online Context Compact works differently from SoL-Pi. OpenCode v2.0.18 gives plugins no way to request its own compaction, so a selected plan boundary is compacted in the outgoing request: the older messages are summarized once (reusing the cached prefix), and later requests carry the summary in their place. See [docs/compatibility.md](docs/compatibility.md) for this and the other differences.
 
-Read the [SoL-Pi blog](https://nvlabs.github.io/SoL-Pi/) for a deeper look at the technical details, design rationale, and core insights behind SoL-Pi, including how auto-research led to the four efficiency mechanisms and how they work.
+## Requirements
 
-## Paper
+- OpenCode **2.0.18** (`npm install -g @opencode/cli@2.0.18`)
+- Node.js 22.19 or newer and npm, to install this package's dependencies
 
-Read our paper: [SoL-Pi: Recursively Scaling Auto-Research Loops for Efficient Agent Harness](https://arxiv.org/abs/2609.20519).
+## Install
 
-## Getting Started
-
-### Requirements
-
-- Node.js 22.19 or newer
-- npm
-- `@earendil-works/pi-coding-agent` 0.85.1
-
-### Install
-
-Install the tested Pi release:
+Clone the repository and install its locked dependencies:
 
 ```bash
-npm install --global @earendil-works/pi-coding-agent@0.85.1
+git clone https://github.com/balcsida/SoL-OpenCode
+cd SoL-OpenCode
+npm ci --ignore-scripts
 ```
 
-Then install SoL-Pi directly from [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi):
+Then load it in one of two ways.
 
-```bash
-pi install git:github.com/NVlabs/SoL-Pi
+**Option 1: a `plugins` entry, with the configuration as options.** In `opencode.jsonc` (project or `~/.config/opencode/`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "/absolute/path/to/SoL-OpenCode",
+      "options": { "version": 1, "actionFusion": true, "observationPack": true }
+    }
+  ]
+}
 ```
 
-To install it only for the current project, use the project-local scope:
+**Option 2: auto-discovery, with `sol-pi.json`.** Create `.opencode/plugins/sol-opencode.ts` in a project (or `~/.config/opencode/plugins/` for every project) containing:
 
-```bash
-pi install git:github.com/NVlabs/SoL-Pi --local --approve
+```ts
+export { default } from "/absolute/path/to/SoL-OpenCode/src/index.ts";
 ```
 
-### Configure
+Then put the configuration in `.opencode/sol-pi.json` or `~/.config/opencode/sol-pi.json`.
 
-SoL-Pi uses a single effective configuration. With the official Pi distribution, it looks for a `sol-pi.json` file in the following locations, in order:
+## Configure
 
-1. `.pi/sol-pi.json` in the current project, if the project is trusted and the file exists;
-2. `~/.pi/agent/sol-pi.json` otherwise.
-
-If neither file exists, SoL-Pi uses its built-in defaults. The project-level configuration takes precedence over the user-level configuration; the two files are not merged.
-
-The following conservative configuration enables only the two local mechanisms that make no additional model calls and do not stop an active run:
+This conservative configuration enables only the two mechanisms that make no extra model calls:
 
 ```json
 {
@@ -105,68 +75,39 @@ The following conservative configuration enables only the two local mechanisms t
 }
 ```
 
-Enable additional mechanisms only after reviewing their configuration and security implications. SoL-Pi uses no dedicated environment variables; feature flags, the reducer provider/model route, and the compaction ratio are configured in `sol-pi.json`. See [sol-pi.example.json](sol-pi.example.json) for a template listing every key.
+Plugin options, when present, replace the files; the project file replaces the global one. Sources are never merged. [sol-pi.example.json](sol-pi.example.json) lists every key, and [docs/configuration.md](docs/configuration.md) has the schema, defaults, and search order.
 
-For the complete schema, see [Configuration](docs/configuration.md). Coding agents and automated environments should follow the canonical [agent installation and configuration protocol](agents-install.md), which describes an all-enabled configuration checked with `scripts/check-sol-pi-config.mjs --require-all-enabled`.
+The reducer defaults to `openai/gpt-5.6-luna` through OpenCode's model runtime. Set `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` to route it elsewhere. Credentials stay in OpenCode.
 
-## Storage and Security
+## Storage and security
 
-ObservationPack and Evidence-Preserving Reducer store session-specific archives under:
+- **Archives:** ObservationPack and the reducer archive originals under `<OpenCode data>/sol-opencode/<sessionID>/`, normally `~/.local/share/opencode/sol-opencode/`. The archives stay local and are not deleted automatically.
+- **State:** Online Context Compact keeps its per-session state in OpenCode's plugin storage.
+- **Remote reduction:** the reducer may send eligible diagnostic logs to its configured model.
 
-```text
-<session-directory>/sol-pi/<session-id>/
-├── observation-pack/
-└── evidence-preserving-reducer/
-```
-
-They archive eligible source material in this directory. The archived copies remain local and are not automatically deleted when the Pi session ends.
-
-Online Context Compact stores its state in Pi's session log. After a successful compaction, it starts a new turn and automatically continues the active task. Cancelling the run or exiting Pi does not trigger automatic continuation.
-
-Evidence-Preserving Reducer may send eligible diagnostic-log content to its configured reducer model using Pi-managed authentication. Review [SECURITY.md](SECURITY.md) before enabling it. Do not enable remote reduction for logs that must remain local.
+Read [SECURITY.md](SECURITY.md) before enabling the reducer.
 
 ## Documentation
 
 | Document | Purpose |
 |---|---|
-| [Configuration](docs/configuration.md) | Config search order, schema, defaults, and trust behavior |
-| [Compatibility](docs/compatibility.md) | Supported Pi APIs and standalone integration details |
-| [Security](SECURITY.md) | Local storage, remote reduction, and sensitive behavior |
-| [Agent installation](agents-install.md) | Reproducible installation and all-enabled validation procedure |
+| [docs/configuration.md](docs/configuration.md) | Sources, schema, defaults, runtime inputs |
+| [docs/compatibility.md](docs/compatibility.md) | OpenCode APIs used, host behaviour relied on, differences from SoL-Pi |
+| [docs/verification.md](docs/verification.md) | Live results on OpenCode 2.0.18 |
+| [docs/port-audit.md](docs/port-audit.md) | The Pi → OpenCode v2 API audit behind the port |
+| [SECURITY.md](SECURITY.md) | Local storage, remote reduction, sensitive behavior |
 
 ## Development
 
-Install from the lockfile and run the complete source checks:
-
 ```bash
 npm ci --ignore-scripts
-npm run check
-npm audit --audit-level=high
-node scripts/check-pi-compat.mjs
+npm run check                     # tsc + the zero-spend test suite
+scripts/live/verify.sh af-op      # real OpenCode session, Action Fusion + ObservationPack
+scripts/live/verify.sh all        # real OpenCode session, all four mechanisms
 ```
 
-`npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.85.1; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.
-
-## Project Status
-
-SoL-Pi is developed and maintained by NVIDIA as a standalone extension for Pi.
-
-We welcome tested, Pi-compatible extension PRs that improve token efficiency and reduce token cost. Our team will help benchmark contributions, publish results on a regular reporting cycle, and credit authors of accepted PRs as Contributors. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-## Acknowledgements
-
-SoL-Pi builds on the public extension interfaces provided by [Pi](https://github.com/earendil-works/pi). Pi remains an independent upstream project and is not vendored into this repository.
+The live checks need `opencode` 2.0.18 on `PATH`. They use a scripted local endpoint, so they need no credentials and cost nothing. `./upstream/` is an optional, git-ignored clone of SoL-Pi kept for reference.
 
 ## License
 
-SoL-Pi is released under the [MIT License](LICENSE).
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=NVlabs%2FSoL-Pi&amp;type=date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-light.svg" />
-    <img alt="SoL-Pi star history chart" src="https://raw.githubusercontent.com/NVlabs/SoL-Pi/star-history/star-history-light.svg" width="100%" />
-  </picture>
-</a>
+MIT. SoL-OpenCode derives from SoL-Pi (Copyright © 2026 NVIDIA Corporation & Affiliates, MIT); see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The research behind the mechanisms is described in the [SoL-Pi paper](https://arxiv.org/abs/2609.20519) and [blog](https://nvlabs.github.io/SoL-Pi/).
