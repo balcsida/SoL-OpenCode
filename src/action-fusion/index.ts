@@ -84,12 +84,18 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<(
 		const input = before.input;
 		if (typeof input !== "object" || input === null || Array.isArray(input)) return;
 
-		let thenRun: ParsedThenRun | undefined;
+		let requested: unknown;
 		if (Object.hasOwn(input, "then_run")) {
-			const { then_run: requested, ...rest } = input as Record<string, unknown>;
+			const { then_run, ...rest } = input as Record<string, unknown>;
 			before.input = rest;
-			if (requested !== undefined && requested !== null) thenRun = parseThenRun(requested);
+			requested = then_run;
+		} else {
+			// OpenCode's built-in input-repair hook runs first and drops keys a
+			// closed schema does not declare, so read the raw call input it
+			// recorded durably before execution.
+			requested = await recordedThenRun(ctx, before.sessionID, before.id);
 		}
+		const thenRun = requested === undefined || requested === null ? undefined : parseThenRun(requested);
 
 		const path = (input as { path?: unknown }).path;
 		const absolutePath = typeof path === "string" ? resolveToolPath(ctx.location.directory, path) : undefined;
@@ -169,6 +175,38 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<(
 		}
 		pending.clear();
 	};
+}
+
+/**
+ * The `then_run` the model sent, from the tool part OpenCode persisted when
+ * it published the call (`Tool.Called`, before execution starts). The newest
+ * assistant message is searched first. Any lookup failure means no command.
+ */
+async function recordedThenRun(ctx: SolContext, sessionID: string, callID: string): Promise<unknown> {
+	let history: readonly unknown[];
+	try {
+		history = await ctx.session.context({ sessionID } as Parameters<SolContext["session"]["context"]>[0]);
+	} catch (error) {
+		console.error(`[actionfusion] could not read the recorded tool input: ${errorText(error)}`);
+		return undefined;
+	}
+	for (let index = history.length - 1; index >= 0; index--) {
+		const message = history[index] as { type?: unknown; content?: unknown };
+		if (message.type !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const item of message.content as { type?: unknown; id?: unknown; state?: { input?: unknown } }[]) {
+			if (item.type !== "tool" || item.id !== callID) continue;
+			let recorded = item.state?.input;
+			if (typeof recorded === "string") {
+				try {
+					recorded = JSON.parse(recorded);
+				} catch {
+					return undefined;
+				}
+			}
+			return typeof recorded === "object" && recorded !== null ? (recorded as { then_run?: unknown }).then_run : undefined;
+		}
+	}
+	return undefined;
 }
 
 async function fusedOutcome(ctx: SolContext, after: ToolExecuteAfter, call: PendingCall): Promise<CommandOutcome> {

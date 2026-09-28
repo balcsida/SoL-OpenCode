@@ -124,6 +124,48 @@ describe("action fusion then_run", () => {
 		expect(result.metadata).toMatchObject({ thenRun: { status: "succeeded", exit: 0 } });
 	});
 
+	it("reads then_run from the recorded call after OpenCode's input repair drops it", async () => {
+		const commands: string[] = [];
+		const { fake } = await setup(async (input) => {
+			commands.push(input.command);
+			return { output: "ok", exit: 0 };
+		});
+		expect(fake.repairInputs).toBe(true);
+		await fake.callTool("write", { path: "a.txt", content: "a", then_run: { command: "recorded" } }, call("w-rec"));
+		expect(commands).toEqual(["recorded"]);
+	});
+
+	it("strips then_run itself when it reaches execute.before", async () => {
+		const commands: string[] = [];
+		const { fake } = await setup(async (input) => {
+			commands.push(input.command);
+			return { output: "ok", exit: 0 };
+		});
+		fake.repairInputs = false;
+		fake.sessionContext = async () => {
+			throw new Error("history must not be needed");
+		};
+		const outcome = await fake.callTool("write", { path: "b.txt", content: "b", then_run: { command: "inline" } }, call("w-inl"));
+		expect(outcome.status === "completed" && outcome.executedInput).toEqual({ path: "b.txt", content: "b" });
+		expect(commands).toEqual(["inline"]);
+	});
+
+	it("runs no command when the recorded call cannot be read", async () => {
+		let shellCalls = 0;
+		const { fake } = await setup(async () => {
+			shellCalls++;
+			return { output: "", exit: 0 };
+		});
+		fake.sessionContext = async () => {
+			throw new Error("store unavailable");
+		};
+		const result = completed(
+			await fake.callTool("write", { path: "c.txt", content: "c", then_run: { command: "lost" } }, call("w-lost")),
+		);
+		expect(shellCalls).toBe(0);
+		expect(text(result)).toBe("Created file successfully: c.txt");
+	});
+
 	it("runs edit then_run after the edited content is visible", async () => {
 		let dir = "";
 		const { fake, dir: directory } = await setup(async () => {

@@ -204,6 +204,8 @@ export async function register(
 	await ctx.tool.transform((editor) => {
 		editor.add({
 			name: RECALL_TOOL,
+			// A direct tool; plugin tools otherwise live only in the Code Mode catalog.
+			options: { codemode: false },
 			description:
 				"Read the archived original of a log that an evidence receipt reduced, by source_sha256 and byte offset. Use it when exact context beyond the receipt's verified quotes is needed; continue with the returned next_offset.",
 			input: RECALL_INPUT,

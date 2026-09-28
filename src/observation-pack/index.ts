@@ -60,6 +60,8 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<v
 	await ctx.tool.transform((editor) => {
 		editor.add({
 			name: RECALL_TOOL,
+			// A direct tool, like SoL-Pi's; plugin tools otherwise live only in the Code Mode catalog.
+			options: { codemode: false },
 			description:
 				"Read a stored large tool result by observation id and byte offset. Use it when a placeholder replaced a large tool result and you need its exact text; continue with the returned next_offset.",
 			input: RECALL_INPUT,

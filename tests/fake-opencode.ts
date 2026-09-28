@@ -89,7 +89,19 @@ export class FakeOpenCode {
 	sessionGenerate: (input: { sessionID: string; prompt: string }) => Promise<{ text: string }> = async () => {
 		throw new Error("session.generate is not configured in this test");
 	};
-	sessionContext: (input: { sessionID: string }) => Promise<unknown[]> = async () => [];
+	/**
+	 * OpenCode projects each tool call, with the raw provider input, into the
+	 * session before executing it (`Tool.Called`); `session.context` returns it.
+	 */
+	readonly recordedCalls = new Map<string, { messageID: string; id: string; name: string; input: unknown }[]>();
+	/** Model OpenCode's built-in `opencode.tool.input.repair` execute.before hook. */
+	repairInputs = true;
+	sessionContext: (input: { sessionID: string }) => Promise<unknown[]> = async ({ sessionID }) =>
+		(this.recordedCalls.get(sessionID) ?? []).map((call) => ({
+			type: "assistant",
+			id: call.messageID,
+			content: [{ type: "tool", id: call.id, name: call.name, state: { status: "running", input: call.input, metadata: {} } }],
+		}));
 
 	readonly directory: string;
 	readonly projectID: string;
@@ -99,8 +111,9 @@ export class FakeOpenCode {
 		this.projectID = projectID;
 	}
 
+	/** A built-in, direct (`codemode: false`) tool with typed failures. */
 	seedTool(tool: FakeTool): void {
-		this.tools.set(tool.name, { ...tool, builtin: true });
+		this.tools.set(tool.name, { ...tool, options: { codemode: false, ...tool.options }, builtin: true });
 	}
 
 	ctx(): SolContext {
@@ -206,10 +219,24 @@ export class FakeOpenCode {
 			messageID: call.messageID ?? "msg_test",
 			id: call.id,
 		};
+		const calls = this.recordedCalls.get(call.sessionID) ?? [];
+		calls.push({ messageID: base.messageID, id: call.id, name, input: structuredClone(input) });
+		this.recordedCalls.set(call.sessionID, calls);
+
 		const before = { tool: name, ...base, input: structuredClone(input) };
+		const target = this.tools.get(name);
+		if (this.repairInputs && target) before.input = repairClosedObject(before.input, target.input);
 		for (const hook of this.toolHooks["execute.before"]) await hook(before);
 		const tool = this.tools.get(before.tool);
-		if (!tool) return { status: "error", error: { message: `No tool named "${before.tool}"` }, executedInput: before.input };
+		// Tools without `codemode: false` are reachable only through Code Mode's
+		// `execute` tool (core/src/tool.ts:234), not as direct model tools.
+		if (!tool || tool.options?.codemode !== false) {
+			return {
+				status: "error",
+				error: { message: `No tool named "${before.tool}" is currently available.` },
+				executedInput: before.input,
+			};
+		}
 
 		const executedInput = before.input;
 		let result: ToolResult;
@@ -280,6 +307,14 @@ export class FakeOpenCode {
 			}),
 		};
 	}
+}
+
+/** The closed-object rule of core/src/plugin/tool-input-repair.ts: undeclared keys are dropped. */
+function repairClosedObject(value: unknown, schema: unknown): unknown {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+	const closed = schema as { type?: unknown; properties?: Record<string, unknown>; additionalProperties?: unknown };
+	if (closed?.type !== "object" || closed.additionalProperties !== false || !closed.properties) return value;
+	return Object.fromEntries(Object.entries(value).filter(([key]) => key in closed.properties!));
 }
 
 /* Plain LLM messages in the shape `toLLMMessages` produces (core/src/session/runner/to-llm-message.ts). */

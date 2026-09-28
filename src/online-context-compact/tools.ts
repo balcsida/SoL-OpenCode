@@ -80,6 +80,8 @@ export async function registerOnlineTools(ctx: SolContext, handlers: OnlineToolH
 	await ctx.tool.transform((editor) => {
 		editor.add({
 			name: UPDATE_PLAN_TOOL,
+			// A direct tool; plugin tools otherwise live only in the Code Mode catalog.
+			options: { codemode: false },
 			description: DESCRIPTION,
 			input: UPDATE_PLAN_INPUT,
 			execute: async (input, context) => {
