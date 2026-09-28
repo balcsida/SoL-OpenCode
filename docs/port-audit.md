@@ -1,6 +1,28 @@
 # SoL-Pi → OpenCode v2 port audit (Phase 1)
 
-Status: **audit only, no port code yet.** Phase 2 starts after the decisions in [§8](#8-decisions-needed-before-phase-2) are made.
+Status: **Phase 1 audit, kept as written.** Phase 2 is done; see [compatibility.md](compatibility.md) and [verification.md](verification.md).
+
+## Phase 2 outcome
+
+Decisions taken on the questions in [§8](#8-decisions-needed-before-phase-2):
+
+1. **Online Context Compact:** option A, plugin-side compaction. The summary goes through `ctx.session.generate`, and a `generate` hook reuses the primary request's projected prefix so the provider cache covers it.
+2. **Action Fusion:** hooks-only design. No new dependency.
+3. **`@opencode/ai`:** not added. OpenCode rebuilds hooked messages with `Message.make`, so plain objects suffice.
+4. **Storage:** files under OpenCode's XDG data directory; Online Context Compact state in `ctx.storage`.
+5. **Config:** options replace files; `<location>/.opencode/sol-pi.json`; no trust gate; reducer default `openai/gpt-5.6-luna`.
+6. **`then_run.timeout`:** milliseconds.
+7. **Reducer readback:** an `evidence_recall` tool.
+8. **Repo:** the root is the new package.
+9. **Live verification:** OpenCode 2.0.18 installed. The live checks use a scripted local endpoint, because no provider credential was available.
+
+The audit missed three host behaviours, which running inside OpenCode 2.0.18 exposed. All three are fixed:
+
+- **Input repair.** The built-in `opencode.tool.input.repair` hook runs before any user plugin and drops undeclared keys, so `then_run` never reached Action Fusion's `execute.before`. Action Fusion now reads it from the call OpenCode records durably before execution.
+- **Code Mode.** Plugin tools default to the Code Mode catalog, which only the `execute` tool can reach. SoL's tools set `options.codemode: false`.
+- **Directory plugins.** A local directory plugin is resolved through `<dir>/server` or `<dir>/index`, not `package.json` exports. A root `index.ts` re-exports the plugin.
+
+The fake plugin context now models all three.
 
 ## 0. Inputs and provenance
 
