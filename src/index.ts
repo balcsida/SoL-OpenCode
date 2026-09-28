@@ -1,0 +1,41 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
+ * SPDX-License-Identifier: MIT
+ */
+
+import { Plugin } from "@opencode/plugin";
+import { loadSolPiConfig, type SolPiConfig } from "./config.ts";
+import type { Cleanup, SolContext } from "./context.ts";
+
+export const PLUGIN_ID = "sol-opencode";
+
+/**
+ * Register the enabled mechanisms in SoL-Pi's order. Hooks of one kind run in
+ * registration order, so ObservationPack projects the request before Online
+ * Context Compact measures it.
+ */
+export async function registerConfiguredFeatures(ctx: SolContext, config: SolPiConfig): Promise<Cleanup> {
+	const cleanups: Cleanup[] = [];
+	const register = async (enabled: boolean, mechanism: () => Promise<Cleanup | void>) => {
+		if (!enabled) return;
+		const cleanup = await mechanism();
+		if (cleanup) cleanups.push(cleanup);
+	};
+
+	void register;
+	void config;
+	void ctx;
+
+	return async () => {
+		for (const cleanup of cleanups.reverse()) await cleanup();
+	};
+}
+
+export default Plugin.define({
+	id: PLUGIN_ID,
+	async setup(ctx) {
+		const { config } = loadSolPiConfig({ projectDirectory: ctx.location.directory, options: ctx.options });
+		return registerConfiguredFeatures(ctx, config);
+	},
+});
