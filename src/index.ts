@@ -7,8 +7,11 @@
 import { Plugin } from "@opencode/plugin";
 import { loadSolPiConfig, type SolPiConfig } from "./config.ts";
 import type { Cleanup, SolContext } from "./context.ts";
+import { register as registerObservationPack } from "./observation-pack/index.ts";
 
 export const PLUGIN_ID = "sol-opencode";
+
+type Mechanism = (ctx: SolContext, config: SolPiConfig) => Promise<Cleanup | void>;
 
 /**
  * Register the enabled mechanisms in SoL-Pi's order. Hooks of one kind run in
@@ -16,17 +19,13 @@ export const PLUGIN_ID = "sol-opencode";
  * Context Compact measures it.
  */
 export async function registerConfiguredFeatures(ctx: SolContext, config: SolPiConfig): Promise<Cleanup> {
+	const mechanisms: [boolean, Mechanism][] = [[config.observationPack, registerObservationPack]];
 	const cleanups: Cleanup[] = [];
-	const register = async (enabled: boolean, mechanism: () => Promise<Cleanup | void>) => {
-		if (!enabled) return;
-		const cleanup = await mechanism();
+	for (const [enabled, register] of mechanisms) {
+		if (!enabled) continue;
+		const cleanup = await register(ctx, config);
 		if (cleanup) cleanups.push(cleanup);
-	};
-
-	void register;
-	void config;
-	void ctx;
-
+	}
 	return async () => {
 		for (const cleanup of cleanups.reverse()) await cleanup();
 	};
