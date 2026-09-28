@@ -175,7 +175,7 @@ export class FakeOpenCode {
 				text: (input: { prompt: string; model?: { providerID: string; id: string } }) => fake.generateText(input),
 			},
 			model: {
-				list: async () => fake.models,
+				list: async () => ({ location: { directory: fake.directory }, data: fake.models }),
 			},
 			storage: {
 				get: async (key: string) => structuredClone(fake.storage.get(key)),
@@ -231,9 +231,10 @@ export class FakeOpenCode {
 	}
 
 	/** Run every registered hook of one request kind on a single mutable event. */
-	async runSessionHook<T extends { model?: { providerID: string } }>(name: string, event: T): Promise<T> {
+	async runSessionHook<T extends object>(name: string, event: T): Promise<T> {
+		const providerID = (event as { model?: { providerID?: string } }).model?.providerID;
 		for (const hook of this.sessionHooks.get(name) ?? []) {
-			if (hook.providerID && hook.providerID !== event.model?.providerID) continue;
+			if (hook.providerID && hook.providerID !== providerID) continue;
 			await hook.callback(event);
 		}
 		return event;
