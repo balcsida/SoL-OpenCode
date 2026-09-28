@@ -124,7 +124,12 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<(
 				content: [...base, { type: "text", text: outcomeText(outcome) }],
 				metadata: {
 					...after.result.metadata,
-					thenRun: { status: outcome.status, ...(outcome.exit === undefined ? {} : { exit: outcome.exit }) },
+					thenRun: {
+						status: outcome.status,
+						...(call.thenRun.ok ? { command: call.thenRun.value.command } : {}),
+						...(outcome.exit === undefined ? {} : { exit: outcome.exit }),
+						...(outcome.truncated ? { truncated: true } : {}),
+					},
 				},
 			};
 		} finally {

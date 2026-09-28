@@ -8,6 +8,7 @@ import { Plugin } from "@opencode/plugin";
 import { loadSolPiConfig, type SolPiConfig } from "./config.ts";
 import type { Cleanup, SolContext } from "./context.ts";
 import { register as registerActionFusion } from "./action-fusion/index.ts";
+import { register as registerEvidencePreservingReducer } from "./evidence-preserving-reducer/index.ts";
 import { register as registerObservationPack } from "./observation-pack/index.ts";
 
 export const PLUGIN_ID = "sol-opencode";
@@ -23,6 +24,7 @@ export async function registerConfiguredFeatures(ctx: SolContext, config: SolPiC
 	const mechanisms: [boolean, Mechanism][] = [
 		[config.actionFusion, registerActionFusion],
 		[config.observationPack, registerObservationPack],
+		[config.evidencePreservingReducer, (context, loaded) => registerEvidencePreservingReducer(context, loaded)],
 	];
 	const cleanups: Cleanup[] = [];
 	for (const [enabled, register] of mechanisms) {

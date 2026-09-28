@@ -98,6 +98,8 @@ export interface CommandOutcome {
 	readonly status: "succeeded" | "failed" | "skipped";
 	readonly text: string;
 	readonly exit?: number;
+	/** The shell kept only the tail of the output and saved the rest to a file. */
+	readonly truncated?: boolean;
 }
 
 /**
@@ -109,7 +111,12 @@ export function commandOutcome(result: ToolResult): CommandOutcome {
 	const metadata = (result.metadata ?? {}) as Record<string, unknown>;
 	const exit = typeof metadata.exit === "number" ? metadata.exit : undefined;
 	const failed = (exit !== undefined && exit !== 0) || metadata.timeout === true || typeof metadata.signal === "string";
-	return { status: failed ? "failed" : "succeeded", text: resultText(result), ...(exit === undefined ? {} : { exit }) };
+	return {
+		status: failed ? "failed" : "succeeded",
+		text: resultText(result),
+		...(exit === undefined ? {} : { exit }),
+		...(metadata.truncated === true ? { truncated: true } : {}),
+	};
 }
 
 export function outcomeText(outcome: CommandOutcome): string {
