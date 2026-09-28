@@ -43,6 +43,10 @@ describe("SoL-OpenCode plugin entry", () => {
 		expect(typeof plugin.setup).toBe("function");
 	});
 
+	it("is re-exported from the checkout root, where OpenCode looks for a directory plugin", async () => {
+		expect((await import("../index.ts")).default).toBe(plugin);
+	});
+
 	it("registers nothing when no configuration exists", async () => {
 		const opencode = await fake();
 		const cleanup = await plugin.setup(opencode.ctx() as never);

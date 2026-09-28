@@ -8,6 +8,7 @@
 		".": "./src/index.ts"
 	},
 	"files": [
+		"index.ts",
 		"src",
 		"docs/compatibility.md",
 		"docs/configuration.md",
