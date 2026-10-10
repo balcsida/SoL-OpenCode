@@ -2,10 +2,12 @@
 
 SoL-OpenCode is developed and tested against OpenCode **2.0.18** (`@opencode/cli` 2.0.18) and pins `@opencode/plugin` to exactly **2.0.18**. The v2 plugin API is young: the package went from its first release on 2026-09-02 to 2.0.18 on 2026-09-28. Treat any other OpenCode version as a compatibility change and re-run both of these before using it:
 
-- `npm run check`: type checking and 130 zero-spend tests;
+- `npm run check`: type checking and 145 zero-spend tests;
 - `scripts/live/verify.sh`: real sessions against a scripted local endpoint.
 
 Source references below point at `anomalyco/opencode` tag `v2.0.18` (`packages/…`) and at `@opencode/plugin@2.0.18` `dist/`.
+
+The mechanisms follow [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) at commit `03529c7` (2026-10-08). SoL-Pi changes that concern only Pi's runtime are not ported: temporary archives for `--no-session` and in-memory sessions (every OpenCode session has an archive root under OpenCode's data directory), the recovery from native compaction refusals, and the deferred-host continuation.
 
 ## Public API used
 
@@ -113,16 +115,17 @@ Differences from SoL-Pi:
 
 OpenCode v2.0.18 gives plugins no way to request its own compaction: `ctx.session` has no `compact` (`dist/promise/session.d.ts:143`, `dist/promise/adapter.js:417-432`). Online Context Compact therefore compacts in the outgoing request:
 
-1. **Plan.** `update_plan` records the plan. A newly completed step becomes a pending boundary.
-2. **Decide.** The next `context` hook (registered after ObservationPack, so it measures the packed request) finds that step's `update_plan` result and runs SoL-Pi's `decideCompaction` gate, unchanged. It uses `cacheWriteReadRatio`, the retained tail (20,000 tokens, SoL-Pi's default), the window from `ctx.model.list()`, and the request size.
+1. **Plan.** `update_plan` records the plan. A previously registered unfinished step that becomes completed is a pending boundary. A completed step that appears under a new id is recorded as history, not progress, so a plan re-stated or re-keyed after compaction does not retrigger it. The plan survives compaction, as in SoL-Pi.
+2. **Decide.** The next `context` hook (registered after ObservationPack, so it measures the packed request) finds that step's `update_plan` result and runs SoL-Pi's `decideCompaction` gate, unchanged. It uses `cacheWriteReadRatio`, the retained tail (20,000 tokens, SoL-Pi's default), the window from `ctx.model.list()`, and the request size. The removable prefix is priced as projected: the messages before the cut point in the packed request, including an earlier checkpoint, so ObservationPack placeholders count at their placeholder size. SoL-Pi reaches the same figure by mapping Pi's native cut back onto the last observed projection. Economic compaction waits two provider requests after any compaction; window protection overrides that cooldown.
 3. **Summarize.** A selected boundary is summarized once through `ctx.session.generate`. The plugin's `generate` hook replaces that request's messages with the primary request's projected prefix, byte for byte, plus the summary prompt, and caps output at 4,096 tokens. Its system prompt, tools, and prefix therefore match the primary request, so the provider's prompt cache covers them. The live run confirms the byte-identical prefix.
-4. **Apply.** The summary and the id of the first kept message become a checkpoint. That request and every later one carry one user message holding the summary and the plan-rebuild reminder in place of the older messages. Mid-conversation system messages stay.
+4. **Apply.** The summary and the id of the first kept message become a checkpoint. That request and every later one carry one user message holding the summary and the reminder to continue the current plan, preserving step ids, in place of the older messages. Mid-conversation system messages stay.
 
 Consequences, compared with SoL-Pi:
 
-- **History and continuation.** Persisted history is never changed, and the run continues in the same step. There is no `abort()`, no `agent_settled` barrier, and no hidden continuation turn. The plan-rebuild reminder is part of the checkpoint message.
+- **History and continuation.** Persisted history is never changed, and the run continues in the same step. There is no `abort()`, no `agent_settled` barrier, and no hidden continuation turn. The reminder to continue the current plan is part of the checkpoint message.
+- **Request accounting.** The request that compacts is counted at its pre-compaction size before the decision, as SoL-Pi's `before_provider_request` precedes its `turn_end` decision, and the compaction clears the size baseline. Cache debt accumulates across compactions and is charged on the post-compaction context. A new prompt after a fully completed plan resets the request-horizon samples and keeps unpaid debt.
 - **Summary cost.** The summary is one extra request on the session's model, as native compaction is. Its prefix is cache-read; the gate's memo estimate stays at SoL-Pi's 1,000 tokens.
-- **Failure.** Any summary failure (an error or empty text) leaves the request and state unchanged. The decision is recorded with `summaryFailed: true`.
+- **Failure.** Any summary failure (an error or empty text) leaves the request and state unchanged. The decision is recorded with `summaryFailed: true`. SoL-Pi's recoverable native refusals (`Nothing to compact`, `Already compacted`, an incomplete summary) and its plan-only retry block have no counterpart: a request without a cut point is declined before any model call, and the run continues either way.
 - **Visibility.** OpenCode's UI does not show plugin compactions. OpenCode's own automatic compaction still runs on its thresholds, measured against the smaller projected requests. When it completes (`session.compaction.ended`), SoL's checkpoint is retired, and the compaction counts with no cache debt.
 - **Stale checkpoints.** A checkpoint whose kept message is gone, for example after a revert, is dropped on the next request.
 - **Corrections and reverts.** `session.revert.committed` resets the plan, like a correction. A prompt that starts with `CORRECTION:`, or a steering prompt sent while the session is running, is a correction. OpenCode delivers every prompt as `"steer"` by default, so a steer counts only while the session is busy.

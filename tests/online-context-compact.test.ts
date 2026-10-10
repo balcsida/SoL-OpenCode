@@ -3,11 +3,21 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG, type SolPiConfig } from "../src/config.ts";
 import type { LLMMessage, ToolResult } from "../src/context.ts";
 import { messageText } from "../src/messages.ts";
-import { POST_COMPACTION_PLAN_REMINDER, register, SUMMARY_MAX_OUTPUT_TOKENS } from "../src/online-context-compact/index.ts";
+import { register as registerObservationPack } from "../src/observation-pack/index.ts";
+import {
+	DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
+	POST_COMPACTION_PLAN_REMINDER,
+	register,
+	SUMMARY_MAX_OUTPUT_TOKENS,
+} from "../src/online-context-compact/index.ts";
+import { messageTokens } from "../src/online-context-compact/projection.ts";
 import { loadSession } from "../src/online-context-compact/store.ts";
 import {
 	assistantMessage,
@@ -22,9 +32,12 @@ import {
 const SESSION = "ses_occ";
 const KEEP = 2_000;
 const cleanups: (() => void | Promise<void>)[] = [];
+const roots: string[] = [];
 
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	for (const cleanup of cleanups.splice(0)) await cleanup();
+	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 type Step = { id: string; goal: string; status: "pending" | "in_progress" | "completed" };
@@ -41,6 +54,18 @@ function completedFirst(): Step[] {
 		{ ...PLAN[1]!, status: "in_progress" },
 		PLAN[2]!,
 	];
+}
+
+function completedSecond(): Step[] {
+	return [
+		{ ...PLAN[0]!, status: "completed" },
+		{ ...PLAN[1]!, status: "completed" },
+		{ ...PLAN[2]!, status: "in_progress" },
+	];
+}
+
+function allCompleted(): Step[] {
+	return PLAN.map((step) => ({ ...step, status: "completed" as const }));
 }
 
 class Scenario {
@@ -169,8 +194,105 @@ describe("online context compact", () => {
 
 		const stored = await scenario.stored();
 		expect(stored.checkpoint).toMatchObject({ keptMessageID: kept[0]?.id, archivedMessages: prefix.length });
-		expect(stored.state).toMatchObject({ nativeCompactionCount: 1, epoch: 1, plan: [] });
+		// The plan survives compaction; the request that compacted is the cooldown's origin.
+		expect(stored.state).toMatchObject({ nativeCompactionCount: 1, epoch: 1, plan: completedFirst(), lastContextTokens: null });
+		expect(stored.state.lastCompactionRequestCount).toBe(stored.state.requestCount);
 		expect(stored.lastDecision).toMatchObject({ compact: true, compacted: true, reason: "economic" });
+	});
+
+	it("keeps the plan across compaction, so only a registered step completing is progress", async () => {
+		const scenario = await setup({ cacheWriteReadRatio: 1 });
+		await atBoundary(scenario);
+		await scenario.request();
+		expect(scenario.generated).toHaveLength(1);
+
+		// After the checkpoint reminder the model re-states the plan, then re-keys it.
+		const restated = await scenario.plan(completedFirst(), "plan-2");
+		expect(restated.metadata).toMatchObject({ boundary: false, completed_step_ids: [] });
+		const rekeyed: Step[] = [
+			{ id: "inspect-again", goal: "inspect the implementation (restated)", status: "completed" },
+			{ id: "change-again", goal: "make the change", status: "in_progress" },
+		];
+		expect((await scenario.plan(rekeyed, "plan-3")).metadata).toMatchObject({ boundary: false });
+		expect((await scenario.stored()).state).toMatchObject({ plan: rekeyed, completedBoundaryRequestCounts: [5] });
+
+		for (let index = 0; index < 4; index++) {
+			scenario.work(6_000);
+			await scenario.request();
+		}
+		const progressed = await scenario.plan(rekeyed.map((step) => ({ ...step, status: "completed" })), "plan-4");
+		expect(progressed.metadata).toMatchObject({ boundary: true, completed_step_ids: ["change-again"] });
+		expect((await scenario.stored()).state.completedBoundaryRequestCounts).toEqual([5, 5]);
+		await scenario.request();
+		expect(scenario.generated).toHaveLength(2);
+	});
+
+	it("cools down economic compaction for two requests after a compaction", async () => {
+		const scenario = await setup({ cacheWriteReadRatio: 1 });
+		await atBoundary(scenario);
+		await scenario.request();
+		expect(scenario.generated).toHaveLength(1);
+
+		scenario.work(6_000);
+		scenario.work(6_000);
+		await scenario.plan(completedSecond(), "plan-2");
+		await scenario.request();
+		expect(scenario.generated).toHaveLength(1);
+		expect((await scenario.stored()).lastDecision).toMatchObject({
+			compact: false,
+			reason: "deferred_post_compaction_cooldown",
+			requestsSinceLastCompaction: 1,
+		});
+
+		scenario.work(6_000);
+		scenario.work(6_000);
+		await scenario.plan(allCompleted(), "plan-3");
+		await scenario.request();
+		expect(scenario.generated).toHaveLength(2);
+		expect((await scenario.stored()).lastDecision).toMatchObject({
+			compact: true,
+			reason: "economic",
+			requestsSinceLastCompaction: 2,
+		});
+	});
+
+	it("starts a new task's horizon fresh once the plan is complete", async () => {
+		const scenario = await setup();
+		await atBoundary(scenario);
+		await scenario.plan(allCompleted(), "plan-2");
+		expect((await scenario.stored()).state.completedBoundaryRequestCounts).toEqual([5, 0]);
+
+		await scenario.fake.runSessionHook("prompt", { sessionID: SESSION, messageID: "m", prompt: { text: "Now add the docs." }, delivery: "steer" });
+		expect((await scenario.stored()).state).toMatchObject({ plan: [], completedBoundaryRequestCounts: [], epoch: 1 });
+	});
+
+	it("prices savings from the packed request, not the persisted history", async () => {
+		const root = await mkdtemp(join(tmpdir(), "sol-opencode-occ-"));
+		roots.push(root);
+		vi.stubEnv("XDG_DATA_HOME", join(root, "data"));
+		const fake = new FakeOpenCode("/tmp/occ-project");
+		await registerObservationPack(fake.ctx(), { ...DEFAULT_CONFIG, observationPack: true });
+		const scenario = await setup({ cacheWriteReadRatio: 1 }, fake);
+
+		scenario.history.push(userMessage("Inspect the diagnostic output.", "msg_user") as LLMMessage);
+		await scenario.request();
+		await scenario.plan(PLAN, "plan-0");
+		scenario.work(200_000);
+		// Sent in full twice, then packed; the packed result sits before the cut point.
+		for (let index = 0; index < 2; index++) await scenario.request();
+		for (let index = 0; index < 2; index++) {
+			scenario.work(6_000);
+			await scenario.request();
+		}
+		await scenario.plan(completedFirst(), "plan-1");
+		const projected = await scenario.request();
+
+		expect(messageText(projected[4]!)).toContain("large tool result replaced");
+		expect(messageTokens(scenario.history[4]!)).toBeGreaterThan(DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE);
+		expect(scenario.generated).toHaveLength(0);
+		const decision = (await scenario.stored()).lastDecision;
+		expect(decision).toMatchObject({ compact: false, reason: "non_positive_saving" });
+		expect(Number(decision?.archiveTokens)).toBeLessThan(DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE);
 	});
 
 	it("keeps applying the checkpoint to later requests while history grows", async () => {
@@ -188,9 +310,8 @@ describe("online context compact", () => {
 	});
 
 	it("declines a compaction that the cache write/read ratio makes uneconomic", async () => {
-		const scenario = await setup();
-		// One short step before the boundary predicts a short horizon.
-		await atBoundary(scenario, 20_000, 1);
+		const scenario = await setup({ cacheWriteReadRatio: 100 });
+		await atBoundary(scenario);
 		const projected = await scenario.request();
 
 		expect(scenario.generated).toHaveLength(0);

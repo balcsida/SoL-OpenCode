@@ -1,6 +1,6 @@
 # Live verification on OpenCode 2.0.18
 
-These results come from `scripts/live/verify.sh`, run on 2026-09-28 against `opencode v2.0.18` (`@opencode/cli` 2.0.18, Linux x64, Node 22.22).
+These results come from `scripts/live/verify.sh`, run on 2026-09-28 against `opencode v2.0.18` (`@opencode/cli` 2.0.18, Linux x64, Node 22.22). They predate the 2026-10 sync with SoL-Pi (see [compatibility.md](compatibility.md)): the checkpoint reminder quoted in step 3 now asks the model to continue the current plan, and the runs have not been repeated.
 
 Each run is one real `opencode run --standalone --auto` session in a scratch project that loads this checkout from `.opencode/plugins/`. The model is a scripted OpenAI-compatible endpoint on `127.0.0.1`, so the runs are zero-spend and deterministic. Everything else is the real OpenCode:
 

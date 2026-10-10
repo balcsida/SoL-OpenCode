@@ -69,9 +69,10 @@ export const UPDATE_PLAN_INPUT = {
 // SoL-Pi's promptSnippet and promptGuidelines have no OpenCode equivalent, so
 // they are part of the description.
 const DESCRIPTION = [
-	"Replace the complete working plan. A newly completed step becomes a safe point where SoL-OpenCode may compact context if doing so is economical.",
+	"Replace the complete working plan. Completing a previously registered unfinished step becomes a safe point where SoL-OpenCode may compact context if doing so is economical. Newly introduced completed steps are recorded as history.",
 	"Keep the working plan current:",
 	"- Send the complete plan on every update_plan call.",
+	"- Preserve step IDs and register unfinished steps before reporting their completion.",
 	"- Keep at most one step in_progress and mark finished steps completed.",
 	"- When completing a step, include concise progress evidence when available.",
 ].join("\n");

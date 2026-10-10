@@ -20,7 +20,7 @@ export const BOUNDARY_COMPACTION_INSTRUCTIONS =
 	"Preserve completed work, verification results, important decisions, and remaining work.";
 export const POST_COMPACTION_PLAN_REMINDER =
 	"Online context compaction finished. The parent task is still active. " +
-	"Before continuing work, call update_plan with a fresh plan for the remaining work.";
+	"Continue the remaining work from the current plan. Preserve existing step IDs when updating progress.";
 
 const CHECKPOINT_OPEN = "<sol-opencode-checkpoint>";
 /** OpenCode's own summary checkpoint (core/src/session/runner/to-llm-message.ts). */
@@ -97,6 +97,17 @@ export function findCutPoint(messages: readonly LLMMessage[], keepRecentTokens: 
 		return { index, messageID: message.id };
 	}
 	return undefined;
+}
+
+/**
+ * Tokens a compaction at `cut` removes: every non-system message before it,
+ * at its projected size. An earlier checkpoint is folded into the new summary,
+ * so it counts; mid-conversation system messages stay, so they do not.
+ */
+export function archivedTokens(messages: readonly LLMMessage[], cut: CutPoint): number {
+	return messages
+		.slice(0, cut.index)
+		.reduce((total, message) => total + (message.role === "system" ? 0 : messageTokens(message)), 0);
 }
 
 export type CheckpointApplication = "applied" | "none" | "stale";
