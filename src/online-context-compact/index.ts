@@ -27,9 +27,9 @@ import { type CompactionDecision, DEFAULT_COMPACTION_ECONOMICS, decideCompaction
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
 import {
 	applyCheckpoint,
+	archivedTokens,
 	type CutPoint,
 	findCutPoint,
-	fixedTokens,
 	isSummaryPrompt,
 	requestTokens,
 	summaryPrompt,
@@ -40,6 +40,7 @@ import {
 	type ProgressSummary,
 	recordBoundary,
 	recordCompaction,
+	recordCompletedPlanHandoff,
 	recordCorrection,
 	recordProviderRequest,
 } from "./state.ts";
@@ -183,7 +184,7 @@ export async function register(
 				if (completedIds.length > 0) {
 					runtime.state = recordBoundary(runtime.state, steps, progressSummary(input, completedIds[0] ?? ""));
 					runtime.pendingBoundary ??= { toolCallId: input.toolCallId };
-				} else if (JSON.stringify(runtime.state.plan) !== JSON.stringify(steps)) {
+				} else {
 					runtime.state = { ...runtime.state, plan: [...steps] };
 				}
 				await save(input.sessionID, runtime);
@@ -214,7 +215,10 @@ export async function register(
 		const result = toolResultFor(event.messages, boundary.toolCallId);
 		if (!result || result.result.type === "error") return undefined;
 
-		const archiveTokens = Math.max(0, writeTokens - fixedTokens(event) - keepRecentTokens);
+		// Price the prefix the summary would replace as projected: ObservationPack
+		// has already packed this request, so its placeholders count at their size.
+		const cut = findCutPoint(event.messages, keepRecentTokens);
+		const archiveTokens = cut ? archivedTokens(event.messages, cut) : 0;
 		const state = runtime.state;
 		const priced = decideCompaction({
 			writeTokens,
@@ -227,14 +231,14 @@ export async function register(
 				state.positiveContextDeltaCount === 0 ? null : state.positiveContextDeltaTotal / state.positiveContextDeltaCount,
 			contextWindowTokens: await contextWindow(event.model),
 			priorCompactionCount: state.nativeCompactionCount,
+			requestsSinceLastCompaction:
+				state.lastCompactionRequestCount === null ? null : state.requestCount - state.lastCompactionRequestCount,
 			carriedDebtTokens: state.cacheDebtTokens,
 			cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
 			cacheWriteReadRatio,
 			economics: DEFAULT_COMPACTION_ECONOMICS,
 		});
-		const cut = priced.compact ? findCutPoint(event.messages, keepRecentTokens) : undefined;
-		const decision: CompactionDecision =
-			priced.compact && !cut ? { ...priced, compact: false, reason: "native_not_compactable" } : priced;
+		const decision: CompactionDecision = cut ? priced : { ...priced, compact: false, reason: "native_not_compactable" };
 		return { decision, cut };
 	};
 
@@ -264,7 +268,7 @@ export async function register(
 			createdAt: Date.now(),
 		};
 		runtime.state = recordCompaction(runtime.state, {
-			debtTokens: decision.writeTokens * (decision.incrementalCacheCostRatio ?? 0),
+			debtTokens: decision.postCompactionTokens * (decision.incrementalCacheCostRatio ?? 0),
 			repaymentTokens: Math.max(0, decision.archiveTokens - decision.memoTokens),
 		});
 		runtime.reportedTokens = undefined;
@@ -281,10 +285,13 @@ export async function register(
 			const estimated = requestTokens(event);
 			const reported = runtime.reportedTokens;
 			const writeTokens = validPositiveInteger(reported) ? Math.max(reported, estimated) : estimated;
+			// Count the request before deciding, as SoL-Pi's before_provider_request
+			// precedes its turn_end decision; a compaction then clears the size baseline.
+			runtime.state = recordProviderRequest(runtime.state, writeTokens);
 			const selected = await decide(event, runtime, writeTokens);
-			let compacted = false;
 			if (selected) {
-				compacted = selected.decision.compact && selected.cut ? await compact(event, runtime, selected.decision, selected.cut) : false;
+				const compacted =
+					selected.decision.compact && selected.cut ? await compact(event, runtime, selected.decision, selected.cut) : false;
 				runtime.lastDecision = {
 					...selected.decision,
 					compacted,
@@ -292,7 +299,6 @@ export async function register(
 					at: Date.now(),
 				};
 			}
-			runtime.state = recordProviderRequest(runtime.state, compacted ? requestTokens(event) : writeTokens);
 			await save(event.sessionID, runtime);
 		});
 	});
@@ -314,10 +320,17 @@ export async function register(
 	await ctx.session.hook("prompt", async (event) => {
 		const runtime = await runtimeFor(event.sessionID);
 		const text = event.prompt.text ?? "";
-		if (!text.startsWith("CORRECTION:") && !(runtime.busy && event.delivery === "steer")) return;
+		const correction = text.startsWith("CORRECTION:") || (runtime.busy && event.delivery === "steer");
 		await withLock(runtime, async () => {
-			runtime.pendingBoundary = undefined;
-			runtime.state = recordCorrection(runtime.state);
+			if (correction) {
+				runtime.pendingBoundary = undefined;
+				runtime.state = recordCorrection(runtime.state);
+			} else {
+				// A new task after a completed plan starts its own request horizon.
+				const next = recordCompletedPlanHandoff(runtime.state);
+				if (next === runtime.state) return;
+				runtime.state = next;
+			}
 			await save(event.sessionID, runtime);
 		});
 	});

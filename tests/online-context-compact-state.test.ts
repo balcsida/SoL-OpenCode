@@ -4,11 +4,14 @@
  * SPDX-License-Identifier: MIT
  */
 import { describe, expect, it } from "vitest";
+import { analyzePlanTransition } from "../src/online-context-compact/plan.ts";
 import {
 	initialOnlineState,
+	ONLINE_STATE_ENTRY,
 	parseOnlineState,
 	recordBoundary,
 	recordCompaction,
+	recordCompletedPlanHandoff,
 	recordCorrection,
 	recordProviderRequest,
 } from "../src/online-context-compact/state.ts";
@@ -37,6 +40,7 @@ describe("Online Context Compact state snapshots", () => {
 			plan: [],
 			pendingProgress: [],
 			requestCount: 0,
+			lastCompactionRequestCount: null,
 			lastBoundaryRequestCount: 0,
 			completedBoundaryRequestCounts: [],
 			lastContextTokens: null,
@@ -97,27 +101,99 @@ describe("Online Context Compact state snapshots", () => {
 		expect(state.pendingProgress).toEqual([PROGRESS]);
 	});
 
-	it("starts a clean epoch after native compaction and carries its cache debt", () => {
-		const before = recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS);
+	it("preserves request intervals and growth history across compaction", () => {
+		let before = recordProviderRequest(initialOnlineState(), 5_000);
+		before = recordBoundary(recordProviderRequest(before, 5_200), PLAN, PROGRESS);
+		before = recordProviderRequest(before, 5_300);
 		const after = recordCompaction(before, { debtTokens: 1_200, repaymentTokens: 300 });
 
 		expect(after).toMatchObject({
 			epoch: 1,
+			plan: PLAN,
+			lastCompactionRequestCount: before.requestCount,
+			lastBoundaryRequestCount: 2,
+			completedBoundaryRequestCounts: [2],
+			positiveContextDeltaTotal: 300,
+			positiveContextDeltaCount: 2,
+			lastContextTokens: null,
 			pendingProgress: [],
 			nativeCompactionCount: 1,
 			cacheDebtTokens: 1_200,
 			cacheDebtRepaymentTokens: 300,
 		});
+		const next = recordBoundary(recordProviderRequest(after, 1_000), PLAN, undefined);
+		expect(next.completedBoundaryRequestCounts).toEqual([2, 2]);
+		expect(next.positiveContextDeltaTotal).toBe(300);
 	});
 
-	it("drops stale plan history when the user corrects an active run", () => {
+	it("restores snapshots persisted before cooldown bookkeeping existed", async () => {
+		const fake = new FakeOpenCode("/tmp/project");
+		const legacy = initialOnlineState();
+		const persisted = JSON.parse(JSON.stringify(legacy)) as Record<string, unknown>;
+		delete persisted.lastCompactionRequestCount;
+		fake.storage.set(storageKey("ses_legacy"), { schema: ONLINE_STATE_ENTRY, state: persisted });
+
+		expect((await loadSession(fake.ctx().storage, "ses_legacy")).state).toEqual(legacy);
+	});
+
+	it("does not treat a plan re-issued after compaction as new progress", () => {
 		const before = recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS);
+		const after = recordCompaction(before, { debtTokens: 0, repaymentTokens: 0 });
+
+		expect(analyzePlanTransition(after.plan, PLAN).completedSteps).toEqual([]);
+	});
+
+	it("accumulates unpaid debt and savings across successive compactions", () => {
+		const outstanding = {
+			...initialOnlineState(),
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		};
+		const after = recordCompaction(outstanding, { debtTokens: 800, repaymentTokens: 200 });
+
+		expect(after).toMatchObject({
+			cacheDebtTokens: 1_700,
+			cacheDebtRepaymentTokens: 500,
+		});
+		expect(recordCompaction(outstanding, { debtTokens: 0, repaymentTokens: 0 })).toMatchObject({
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		});
+	});
+
+	it("resets a completed task's horizon at handoff while preserving its unpaid debt", () => {
+		const before = {
+			...recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS),
+			plan: PLAN.map((step) => ({ ...step, status: "completed" as const })),
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		};
+		expect(recordCompletedPlanHandoff(before)).toMatchObject({
+			plan: [],
+			completedBoundaryRequestCounts: [],
+			lastBoundaryRequestCount: before.requestCount,
+			lastContextTokens: null,
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		});
+		const active = { ...before, plan: PLAN };
+		expect(recordCompletedPlanHandoff(active)).toBe(active);
+	});
+
+	it("drops stale plan history and debt when the user corrects an active run", () => {
+		const before = {
+			...recordBoundary(recordProviderRequest(initialOnlineState(), 5_000), PLAN, PROGRESS),
+			cacheDebtTokens: 900,
+			cacheDebtRepaymentTokens: 300,
+		};
 		expect(recordCorrection(before)).toMatchObject({
 			epoch: 1,
 			plan: [],
 			pendingProgress: [],
 			completedBoundaryRequestCounts: [],
 			lastContextTokens: null,
+			cacheDebtTokens: 0,
+			cacheDebtRepaymentTokens: 0,
 		});
 	});
 });

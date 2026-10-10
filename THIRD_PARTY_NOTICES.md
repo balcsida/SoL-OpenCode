@@ -2,7 +2,7 @@
 
 ## SoL-Pi
 
-SoL-OpenCode is a port of [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) (commit `1559b5cb12c72da4a485bc50fe326586b216fb19`) from Pi's extension API to the OpenCode v2 plugin API. The mechanism logic, configuration schema, tests, and documentation structure derive from SoL-Pi, which is released under the MIT License:
+SoL-OpenCode is a port of [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) (commit `03529c710269d3e3336a033cead49a95189987f1`) from Pi's extension API to the OpenCode v2 plugin API. The mechanism logic, configuration schema, tests, and documentation structure derive from SoL-Pi, which is released under the MIT License:
 
 ```text
 Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
