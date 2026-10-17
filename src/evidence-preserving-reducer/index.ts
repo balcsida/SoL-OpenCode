@@ -23,6 +23,7 @@ import type { SolPiConfig } from "../config.ts";
 import type { SolContext, ToolExecuteAfter, ToolResult } from "../context.ts";
 import { openCodeShellOutputDirectory, sessionRoot } from "../paths.ts";
 import { errorMessage, recallPage, toolFailure } from "../recall.ts";
+import { formatSavingsBytes, type ReportSaving } from "../savings.ts";
 import { archiveBody, archivePath, archiveRoot, isSourceHash } from "./archive.ts";
 import { type CompletedToolCall, reducibleToolResult } from "./candidate.ts";
 import {
@@ -42,6 +43,7 @@ import { RECALL_TOOL, receiptText, validateReceipt } from "./receipt.ts";
 export interface ReducerDependencies {
 	readonly generate: SolContext["generate"];
 	readonly shellOutputDirectory: string;
+	readonly report: ReportSaving;
 }
 
 function errorName(error: unknown): string | undefined {
@@ -52,7 +54,7 @@ function errorName(error: unknown): string | undefined {
 export async function reduceToolResult(
 	journal: Journal,
 	config: ReducerConfig,
-	call: CompletedToolCall & { readonly id: string },
+	call: CompletedToolCall & { readonly id: string; readonly sessionID: string },
 	dependencies: ReducerDependencies,
 ): Promise<ToolResult | undefined> {
 	const reducible = await reducibleToolResult(call, dependencies.shellOutputDirectory);
@@ -152,6 +154,11 @@ export async function reduceToolResult(
 		uncertain: checked.value.uncertain,
 		usage: provider.usage,
 	});
+	dependencies.report({
+		sessionID: call.sessionID,
+		mechanism: "Evidence-Preserving Reducer",
+		saving: formatSavingsBytes(archive.bytes - receiptBytes),
+	});
 	return {
 		...call.result,
 		content: reducible.projectReceipt(receipt),
@@ -184,6 +191,7 @@ export async function register(
 	ctx: SolContext,
 	config: SolPiConfig,
 	options: Pick<ReducerConfigOptions, "timeoutMs"> = {},
+	report: ReportSaving = () => {},
 ): Promise<void> {
 	const reducerOptions: ReducerConfigOptions = {
 		reducerModel: config.evidencePreservingReducerModel,
@@ -227,6 +235,7 @@ export async function register(
 	const dependencies: ReducerDependencies = {
 		generate: ctx.generate,
 		shellOutputDirectory: openCodeShellOutputDirectory(ctx.location.project.id),
+		report,
 	};
 	await ctx.tool.hook("execute.after", async (event) => {
 		const after = event as ToolExecuteAfter;

@@ -23,6 +23,7 @@ import { createLedger, type Ledger } from "../ledger.ts";
 import { isToolResultPart, toolResultText, withContent, withToolResultText } from "../messages.ts";
 import { sessionRoot } from "../paths.ts";
 import { errorMessage, recallPage, toolFailure } from "../recall.ts";
+import { formatSavingsCount, type ReportSaving } from "../savings.ts";
 import {
 	createObservation,
 	ensureStored,
@@ -45,7 +46,7 @@ const RECALL_INPUT = {
 	additionalProperties: false,
 } as const;
 
-export async function register(ctx: SolContext, _config: SolPiConfig): Promise<void> {
+export async function register(ctx: SolContext, _config: SolPiConfig, report: ReportSaving = () => {}): Promise<void> {
 	const sentCounts = new Map<string, number>();
 	const ledgers = new Map<string, Ledger>();
 	const ledgerFor = (root: string): Ledger => {
@@ -72,7 +73,7 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<v
 		});
 	});
 
-	await ctx.session.hook("context", (event) => projectObservations(event, sentCounts, ledgerFor));
+	await ctx.session.hook("context", (event) => projectObservations(event, sentCounts, ledgerFor, report));
 }
 
 async function recall(
@@ -100,6 +101,7 @@ export async function projectObservations(
 	event: ContextHookEvent,
 	sentCounts: Map<string, number>,
 	ledgerFor: (root: string) => Ledger,
+	report: ReportSaving = () => {},
 ): Promise<void> {
 	let root: string;
 	try {
@@ -154,6 +156,7 @@ export async function projectObservations(
 
 				const placeholder = placeholderFor(observation);
 				const placeholderTokens = estimateTokens(placeholder);
+				const removedTokens = Math.max(0, observation.tokens - placeholderTokens);
 				await ledgerFor(root)({
 					event: "placeholder",
 					id: observation.id,
@@ -165,8 +168,15 @@ export async function projectObservations(
 					originalTokens: observation.tokens,
 					placeholderBytes: Buffer.byteLength(placeholder, "utf8"),
 					placeholderTokens,
-					removedTokens: Math.max(0, observation.tokens - placeholderTokens),
+					removedTokens,
 				});
+				if (previousSends === FULL_SENDS) {
+					report({
+						sessionID: event.sessionID,
+						mechanism: "Observation Pack",
+						saving: formatSavingsCount(removedTokens, "context tokens avoided"),
+					});
+				}
 				content ??= [...message.content];
 				content[partIndex] = withToolResultText(part, placeholder);
 				sentCounts.set(sendCountKey, previousSends + 1);

@@ -93,7 +93,7 @@ Differences from SoL-Pi:
 
 - OpenCode truncates tool output itself before a result reaches the request (2,000 lines / 50 KiB). Such results are archived as the truncated text OpenCode recorded; OpenCode keeps the full output in its own files.
 - Archives live under `<OpenCode data>/sol-opencode/<sessionID>/observation-pack/` rather than a Pi session directory.
-- The first-placeholder "money saved" TUI notification is not ported. The ledger records every saving.
+- SoL-Pi's "money saved" notification is ported as a toast by the TUI companion (`tui.ts`); the status line and tool-call rendering are not. The ledger records every saving.
 
 ## Evidence-Preserving Reducer
 
@@ -126,7 +126,7 @@ Consequences, compared with SoL-Pi:
 - **Request accounting.** The request that compacts is counted at its pre-compaction size before the decision, as SoL-Pi's `before_provider_request` precedes its `turn_end` decision, and the compaction clears the size baseline. Cache debt accumulates across compactions and is charged on the post-compaction context. A new prompt after a fully completed plan resets the request-horizon samples and keeps unpaid debt.
 - **Summary cost.** The summary is one extra request on the session's model, as native compaction is. Its prefix is cache-read; the gate's memo estimate stays at SoL-Pi's 1,000 tokens.
 - **Failure.** Any summary failure (an error or empty text) leaves the request and state unchanged. The decision is recorded with `summaryFailed: true`. SoL-Pi's recoverable native refusals (`Nothing to compact`, `Already compacted`, an incomplete summary) and its plan-only retry block have no counterpart: a request without a cut point is declined before any model call, and the run continues either way.
-- **Visibility.** OpenCode's UI does not show plugin compactions. OpenCode's own automatic compaction still runs on its thresholds, measured against the smaller projected requests. When it completes (`session.compaction.ended`), SoL's checkpoint is retired, and the compaction counts with no cache debt.
+- **Visibility.** OpenCode's UI does not show plugin compactions; the TUI companion toasts each one. OpenCode's own automatic compaction still runs on its thresholds, measured against the smaller projected requests. When it completes (`session.compaction.ended`), SoL's checkpoint is retired, and the compaction counts with no cache debt.
 - **Stale checkpoints.** A checkpoint whose kept message is gone, for example after a revert, is dropped on the next request.
 - **Corrections and reverts.** `session.revert.committed` resets the plan, like a correction. A prompt that starts with `CORRECTION:`, or a steering prompt sent while the session is running, is a correction. OpenCode delivers every prompt as `"steer"` by default, so a steer counts only while the session is busy.
 - **Forks.** A forked session starts without a checkpoint.
@@ -158,4 +158,4 @@ The live checks verify runtime compatibility, not provider behaviour or token sa
 
 - **Native compaction.** If OpenCode adds `compact` to the plugin `SessionDomain`, Online Context Compact could switch to native compaction with `delivery: "steer"`. The runner already continues the loop after a steer-delivered compaction.
 - **Reducer request options.** If `ctx.generate.text` gains request options (system, `maxTokens`, abort signal, usage), the reducer can restore SoL-Pi's output cap, timeout cancellation, and receipt usage.
-- **TUI.** The savings display (`renderCall`, `setStatus`, `notify`) is not ported. A CLI plugin (`@opencode/plugin/tui`) could provide it.
+- **TUI.** `notify` is ported: the server plugin emits a `saving` RPC event and the TUI companion (`@opencode/plugin/tui`) shows a toast. The `setStatus` line and `renderCall` rendering are not ported. The web UI has no plugin surface.

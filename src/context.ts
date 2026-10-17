@@ -16,7 +16,7 @@ import type { Error as ToolErrorClass, Result } from "@opencode/plugin/promise/t
 
 export type SolContext = Pick<
 	Plugin.Context,
-	"event" | "generate" | "location" | "model" | "options" | "session" | "storage" | "tool"
+	"event" | "generate" | "location" | "model" | "options" | "rpc" | "session" | "storage" | "tool"
 >;
 
 export type Cleanup = () => Promise<void> | void;

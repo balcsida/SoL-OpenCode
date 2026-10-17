@@ -25,6 +25,7 @@
 
 import type { SolPiConfig } from "../config.ts";
 import type { RequestHookEvent, SolContext, ToolError, ToolExecuteAfter, ToolExecuteBefore } from "../context.ts";
+import type { ReportSaving } from "../savings.ts";
 import { acquireFusedFileQueue, resolveToolPath } from "./file-queue.ts";
 import {
 	assertUnchangedBeforeCommand,
@@ -64,7 +65,7 @@ function callKey(event: { readonly sessionID: string; readonly id: string }): st
 	return `${event.sessionID}\0${event.id}`;
 }
 
-export async function register(ctx: SolContext, _config: SolPiConfig): Promise<() => void> {
+export async function register(ctx: SolContext, _config: SolPiConfig, report: ReportSaving = () => {}): Promise<() => void> {
 	const pending = new Map<string, PendingCall>();
 
 	const advertise = (event: RequestHookEvent): void => {
@@ -138,6 +139,9 @@ export async function register(ctx: SolContext, _config: SolPiConfig): Promise<(
 					},
 				},
 			};
+			if (outcome.status === "succeeded") {
+				report({ sessionID: after.sessionID, mechanism: "Action Fusion", saving: "1 model round-trip avoided" });
+			}
 		} finally {
 			// Stay tracked until the command settles so an interruption can abort it.
 			if (pending.get(key) === call) pending.delete(key);

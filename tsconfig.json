@@ -14,5 +14,5 @@
 		"verbatimModuleSyntax": true,
 		"skipLibCheck": true
 	},
-	"include": ["index.ts", "src/**/*.ts", "tests/**/*.ts"]
+	"include": ["index.ts", "tui.ts", "src/**/*.ts", "tests/**/*.ts"]
 }

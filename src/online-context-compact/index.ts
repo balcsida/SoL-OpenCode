@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import type { SolPiConfig } from "../config.ts";
 import type { Cleanup, ContextHookEvent, GenerateHookEvent, LLMMessage, SolContext, ToolResult } from "../context.ts";
 import { errorMessage, toolFailure } from "../recall.ts";
+import { formatSavingsCount, type ReportSaving } from "../savings.ts";
 import { type CompactionDecision, DEFAULT_COMPACTION_ECONOMICS, decideCompaction } from "./economics.ts";
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
 import {
@@ -118,6 +119,7 @@ export async function register(
 	ctx: SolContext,
 	config: SolPiConfig,
 	options: OnlineContextCompactOptions = {},
+	report: ReportSaving = () => {},
 ): Promise<Cleanup> {
 	const keepRecentTokens = resolveKeepRecentTokens(options.keepRecentTokens);
 	const cacheWriteReadRatio = config.cacheWriteReadRatio;
@@ -273,6 +275,14 @@ export async function register(
 		});
 		runtime.reportedTokens = undefined;
 		applyCheckpoint(event, runtime.checkpoint);
+		const removed = Math.max(0, decision.archiveTokens - tokenEstimate(summary));
+		if (removed > 0) {
+			report({
+				sessionID: event.sessionID,
+				mechanism: "Online Context Compact",
+				saving: formatSavingsCount(removed, "context tokens removed"),
+			});
+		}
 		return true;
 	};
 

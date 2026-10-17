@@ -41,7 +41,7 @@ async function setup(): Promise<{ fake: FakeOpenCode; dataHome: string }> {
 	const dataHome = await temporaryDirectory();
 	vi.stubEnv("XDG_DATA_HOME", dataHome);
 	const fake = new FakeOpenCode(await temporaryDirectory());
-	await register(fake.ctx(), { ...DEFAULT_CONFIG, observationPack: true });
+	await register(fake.ctx(), { ...DEFAULT_CONFIG, observationPack: true }, fake.report);
 	return { fake, dataHome };
 }
 
@@ -123,7 +123,15 @@ describe("observation pack", () => {
 		const body = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;
 		const message = toolResultMessage("call-1", "shell", body);
 		const history = structuredClone(message);
-		const projected = await project(fake, message, 4);
+		const projected = await project(fake, message, 2);
+		expect(fake.rpcEvents).toEqual([]);
+		projected.push(...(await project(fake, message, 2)));
+		expect(fake.rpcEvents).toHaveLength(1);
+		expect(fake.rpcEvents[0]).toMatchObject({
+			name: "saving",
+			data: { sessionID: SESSION_ID, mechanism: "Observation Pack" },
+		});
+		expect((fake.rpcEvents[0]?.data as { saving: string }).saving).toMatch(/^[\d,]+ context tokens avoided$/u);
 
 		expect(FULL_SENDS).toBe(2);
 		expect(projected[0]).toBe(body);
