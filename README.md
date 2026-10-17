@@ -81,7 +81,7 @@ The reducer defaults to `openai/gpt-5.6-luna` through OpenCode's model runtime. 
 
 ## Seeing it work
 
-The TUI companion (`tui.ts`, in the same directory) loads automatically: OpenCode's CLI loads the TUI entry of every plugin configured in `opencode.json(c)` that has one (documented at opencode.ai/v2/docs/cli/plugins). It shows one toast at startup listing the active mechanisms, and one toast per saving, worded as in SoL-Pi ("Money saved · …"). OpenCode v2 documents no plugin surface for the web UI, so nothing is shown there.
+The TUI companion (`tui.tsx`, in the same directory) loads automatically: OpenCode's CLI loads the TUI entry of every plugin configured in `opencode.json(c)` that has one (documented at opencode.ai/v2/docs/cli/plugins). It shows one toast at startup listing the active mechanisms, and one toast per saving, worded as in SoL-Pi ("Money saved · …"). OpenCode v2 documents no plugin surface for the web UI, so nothing is shown there. The TUI sidebar also shows a SoL-OpenCode section with the enabled mechanisms and a per-session tally of their savings.
 
 ## Storage and security
 

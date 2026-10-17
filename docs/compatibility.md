@@ -93,7 +93,7 @@ Differences from SoL-Pi:
 
 - OpenCode truncates tool output itself before a result reaches the request (2,000 lines / 50 KiB). Such results are archived as the truncated text OpenCode recorded; OpenCode keeps the full output in its own files.
 - Archives live under `<OpenCode data>/sol-opencode/<sessionID>/observation-pack/` rather than a Pi session directory.
-- SoL-Pi's "money saved" notification is ported as a toast by the TUI companion (`tui.ts`); the status line and tool-call rendering are not. The ledger records every saving.
+- SoL-Pi's "money saved" notification is ported as a toast by the TUI companion (`tui.tsx`); the status line is ported as a sidebar section; tool-call rendering is not. The ledger records every saving.
 
 ## Evidence-Preserving Reducer
 
@@ -158,4 +158,4 @@ The live checks verify runtime compatibility, not provider behaviour or token sa
 
 - **Native compaction.** If OpenCode adds `compact` to the plugin `SessionDomain`, Online Context Compact could switch to native compaction with `delivery: "steer"`. The runner already continues the loop after a steer-delivered compaction.
 - **Reducer request options.** If `ctx.generate.text` gains request options (system, `maxTokens`, abort signal, usage), the reducer can restore SoL-Pi's output cap, timeout cancellation, and receipt usage.
-- **TUI.** `notify` is ported: the server plugin emits a `saving` RPC event and the TUI companion (`@opencode/plugin/tui`) shows a toast. The `setStatus` line and `renderCall` rendering are not ported. The web UI has no plugin surface.
+- **TUI.** `notify` is ported: the server plugin emits a `saving` RPC event and the TUI companion (`@opencode/plugin/tui`) shows a toast. SoL-Pi's status line is ported as a sidebar section with per-mechanism tallies; `renderCall` rendering is not ported. The web UI has no plugin surface.

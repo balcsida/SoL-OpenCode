@@ -6,11 +6,11 @@
 	"private": true,
 	"exports": {
 		".": "./src/index.ts",
-		"./tui": "./tui.ts"
+		"./tui": "./tui.tsx"
 	},
 	"files": [
 		"index.ts",
-		"tui.ts",
+		"tui.tsx",
 		"src",
 		"docs/compatibility.md",
 		"docs/configuration.md",
