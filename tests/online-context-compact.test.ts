@@ -122,7 +122,7 @@ class Scenario {
 
 async function setup(config: Partial<SolPiConfig> = {}, fake = new FakeOpenCode("/tmp/occ-project")): Promise<Scenario> {
 	const scenario = new Scenario(fake);
-	cleanups.push(await register(fake.ctx(), { ...DEFAULT_CONFIG, onlineContextCompact: true, ...config }, { keepRecentTokens: KEEP }));
+	cleanups.push(await register(fake.ctx(), { ...DEFAULT_CONFIG, onlineContextCompact: true, ...config }, { keepRecentTokens: KEEP }, fake.report));
 	return scenario;
 }
 
@@ -191,6 +191,12 @@ describe("online context compact", () => {
 		expect(kept.at(-1)).toBe(scenario.history.at(-1));
 		expect(kept[0]?.id).toMatch(/^msg_a\d+$/u);
 		expect(scenario.history).toEqual(history);
+		expect(scenario.fake.rpcEvents).toHaveLength(1);
+		expect(scenario.fake.rpcEvents[0]).toMatchObject({
+			name: "saving",
+			data: { sessionID: SESSION, mechanism: "Online Context Compact" },
+		});
+		expect((scenario.fake.rpcEvents[0]?.data as { saving: string }).saving).toMatch(/^[\d,]+ context tokens removed$/u);
 
 		const stored = await scenario.stored();
 		expect(stored.checkpoint).toMatchObject({ keptMessageID: kept[0]?.id, archivedMessages: prefix.length });
@@ -350,6 +356,7 @@ describe("online context compact", () => {
 		const projected = await scenario.request();
 
 		expect(projected).toEqual(scenario.history);
+		expect(scenario.fake.rpcEvents).toEqual([]);
 		const stored = await scenario.stored();
 		expect(stored.checkpoint).toBeUndefined();
 		expect(stored.state.nativeCompactionCount).toBe(0);

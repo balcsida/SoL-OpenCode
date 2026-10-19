@@ -17,6 +17,7 @@
  */
 
 import type { SolContext, ToolResult } from "../src/context.ts";
+import type { Saving } from "../src/rpc.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Callback = (event: any) => unknown;
@@ -80,6 +81,18 @@ export class FakeOpenCode {
 	readonly sessionHooks = new Map<string, { callback: Callback; providerID: string | undefined }[]>();
 	readonly storage = new Map<string, unknown>();
 	readonly subscriptions = new Set<Subscription>();
+	readonly rpcRegistrations: { definition: any; handlers: Record<string, (input: any) => Promise<any>>; disposed: boolean }[] = [];
+	readonly rpcEvents: { name: string; data: unknown }[] = [];
+	/** Makes `rpc.register` reject. */
+	rpcRegisterError: Error | undefined;
+	/** Makes `events.emit` return a rejected promise. */
+	rpcEmitError: Error | undefined;
+	/** Makes `events.emit` throw synchronously. */
+	rpcEmitThrows: Error | undefined;
+	/** Hand to a mechanism's `register` to capture its savings as `saving` events. */
+	readonly report = (saving: Saving): void => {
+		this.rpcEvents.push({ name: "saving", data: saving });
+	};
 	models: FakeModel[] = [];
 	options: Record<string, unknown> = {};
 	generateText: (input: { prompt: string; model?: { providerID: string; id: string } }) => Promise<{ text: string }> =
@@ -203,6 +216,26 @@ export class FakeOpenCode {
 						.filter(([key]) => key.startsWith(options.prefix))
 						.map(([key, value]) => ({ key, value })),
 				}),
+			},
+			rpc: {
+				register: async (definition: any, handlers: Record<string, (input: any) => Promise<any>>) => {
+					if (fake.rpcRegisterError) throw fake.rpcRegisterError;
+					const registration = { definition, handlers, disposed: false };
+					fake.rpcRegistrations.push(registration);
+					return {
+						dispose: async () => {
+							registration.disposed = true;
+						},
+						events: {
+							emit: (name: string, data: unknown): Promise<void> => {
+								if (fake.rpcEmitThrows) throw fake.rpcEmitThrows;
+								if (fake.rpcEmitError) return Promise.reject(fake.rpcEmitError);
+								fake.rpcEvents.push({ name, data });
+								return Promise.resolve();
+							},
+						},
+					};
+				},
 			},
 			event: {
 				subscribe: (options?: { signal?: AbortSignal }) => fake.subscribe(options?.signal),

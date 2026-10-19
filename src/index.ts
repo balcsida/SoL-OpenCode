@@ -11,10 +11,12 @@ import { register as registerActionFusion } from "./action-fusion/index.ts";
 import { register as registerEvidencePreservingReducer } from "./evidence-preserving-reducer/index.ts";
 import { register as registerObservationPack } from "./observation-pack/index.ts";
 import { register as registerOnlineContextCompact } from "./online-context-compact/index.ts";
+import { SOL_RPC, type Saving, type SavingMechanism } from "./rpc.ts";
+import type { ReportSaving } from "./savings.ts";
 
 export const PLUGIN_ID = "sol-opencode";
 
-type Mechanism = (ctx: SolContext, config: SolPiConfig) => Promise<Cleanup | void>;
+type Mechanism = (ctx: SolContext, config: SolPiConfig, report: ReportSaving) => Promise<Cleanup | void>;
 
 /**
  * Register the enabled mechanisms in SoL-Pi's order. Hooks of one kind run in
@@ -22,16 +24,44 @@ type Mechanism = (ctx: SolContext, config: SolPiConfig) => Promise<Cleanup | voi
  * Context Compact measures it.
  */
 export async function registerConfiguredFeatures(ctx: SolContext, config: SolPiConfig): Promise<Cleanup> {
-	const mechanisms: [boolean, Mechanism][] = [
-		[config.actionFusion, registerActionFusion],
-		[config.observationPack, registerObservationPack],
-		[config.evidencePreservingReducer, (context, loaded) => registerEvidencePreservingReducer(context, loaded)],
-		[config.onlineContextCompact, (context, loaded) => registerOnlineContextCompact(context, loaded)],
+	const mechanisms: [boolean, SavingMechanism, Mechanism][] = [
+		[config.actionFusion, "Action Fusion", registerActionFusion],
+		[config.observationPack, "Observation Pack", registerObservationPack],
+		[
+			config.evidencePreservingReducer,
+			"Evidence-Preserving Reducer",
+			(context, loaded, report) => registerEvidencePreservingReducer(context, loaded, {}, report),
+		],
+		[
+			config.onlineContextCompact,
+			"Online Context Compact",
+			(context, loaded, report) => registerOnlineContextCompact(context, loaded, {}, report),
+		],
 	];
+	const labels = mechanisms.flatMap(([enabled, label]) => (enabled ? [label] : []));
 	const cleanups: Cleanup[] = [];
-	for (const [enabled, register] of mechanisms) {
+	// The TUI channel is best effort: a mechanism must never fail because of it.
+	const log = (error: unknown): void => {
+		console.error(`[sol-opencode] saving event failed: ${error instanceof Error ? error.message : String(error)}`);
+	};
+	let report: ReportSaving = () => {};
+	try {
+		const registration = await ctx.rpc.register(SOL_RPC, { status: async () => ({ mechanisms: labels }) });
+		report = (saving: Saving) => {
+			try {
+				void registration.events.emit("saving", { ...saving }).catch(log);
+			} catch (error) {
+				log(error);
+			}
+		};
+		// Cleanups run in reverse, so the channel is disposed last.
+		cleanups.push(() => registration.dispose());
+	} catch (error) {
+		console.error(`[sol-opencode] TUI channel unavailable: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	for (const [enabled, , register] of mechanisms) {
 		if (!enabled) continue;
-		const cleanup = await register(ctx, config);
+		const cleanup = await register(ctx, config, report);
 		if (cleanup) cleanups.push(cleanup);
 	}
 	return async () => {

@@ -4,12 +4,13 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import plugin, { PLUGIN_ID, registerConfiguredFeatures } from "../src/index.ts";
+import { editTool, shellTool, writeTool } from "./fake-builtins.ts";
 import { FakeOpenCode } from "./fake-opencode.ts";
 
 const ALL_ENABLED = {
@@ -74,6 +75,26 @@ describe("SoL-OpenCode plugin entry", () => {
 		expect(opencode.sessionHooks.get("prompt")).toHaveLength(1);
 	});
 
+	it("registers the RPC contract with the enabled mechanism labels in order", async () => {
+		const opencode = await fake();
+		const cleanup = await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, ...ALL_ENABLED });
+		expect(opencode.rpcRegistrations).toHaveLength(1);
+		const [registration] = opencode.rpcRegistrations;
+		expect(registration?.definition.id).toBe("sol-opencode");
+		expect(await registration?.handlers.status?.({})).toEqual({
+			mechanisms: ["Action Fusion", "Observation Pack", "Evidence-Preserving Reducer", "Online Context Compact"],
+		});
+		expect(registration?.disposed).toBe(false);
+		await cleanup();
+		expect(registration?.disposed).toBe(true);
+	});
+
+	it("registers the RPC with no mechanism enabled", async () => {
+		const opencode = await fake();
+		cleanups.push(await registerConfiguredFeatures(opencode.ctx(), DEFAULT_CONFIG));
+		expect(await opencode.rpcRegistrations[0]?.handlers.status?.({})).toEqual({ mechanisms: [] });
+	});
+
 	it("wires only the enabled mechanisms", async () => {
 		const opencode = await fake();
 		cleanups.push(
@@ -87,5 +108,70 @@ describe("SoL-OpenCode plugin entry", () => {
 		const opencode = await fake();
 		opencode.options = { version: 1, actionFusion: "yes" };
 		await expect(plugin.setup(opencode.ctx() as never)).rejects.toThrow("SoL-Pi config actionFusion must be boolean");
+	});
+	describe("TUI channel", () => {
+		const call = { sessionID: "ses_rpc", id: "w-1", messageID: "msg_1", agent: "build" };
+		const fusedWrite = { path: "a.txt", content: "a\n", then_run: { command: "check" } };
+
+		async function fusionFake(): Promise<FakeOpenCode> {
+			const opencode = await fake();
+			await mkdir(opencode.directory, { recursive: true });
+			opencode.seedTool(editTool(opencode.directory));
+			opencode.seedTool(writeTool(opencode.directory));
+			opencode.seedTool(shellTool(async () => ({ output: "checked\n", exit: 0 })));
+			return opencode;
+		}
+
+		function resultText(outcome: Awaited<ReturnType<FakeOpenCode["callTool"]>>): string {
+			if (outcome.status !== "completed") throw new Error(`expected completed, got ${outcome.status}`);
+			const content = outcome.result.content;
+			return typeof content === "string" ? content : (content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+		}
+
+		it("delivers a saving through the real report", async () => {
+			const opencode = await fusionFake();
+			cleanups.push(await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+			await opencode.callTool("write", fusedWrite, call);
+			expect(opencode.rpcEvents).toEqual([
+				{ name: "saving", data: { sessionID: "ses_rpc", mechanism: "Action Fusion", saving: "1 model round-trip avoided" } },
+			]);
+		});
+
+		it("still registers every mechanism, and disposes nothing, when the channel is unavailable", async () => {
+			const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				const opencode = await fake();
+				opencode.rpcRegisterError = new Error("no rpc");
+				const cleanup = await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, ...ALL_ENABLED });
+				expect([...opencode.tools.keys()]).toEqual(["obs_recall", "evidence_recall", "update_plan"]);
+				expect(opencode.toolHooks["execute.before"]).toHaveLength(1);
+				expect(opencode.toolHooks["execute.after"]).toHaveLength(2);
+				expect(opencode.sessionHooks.get("compaction")).toHaveLength(1);
+				expect(opencode.rpcRegistrations).toHaveLength(0);
+				await cleanup();
+				expect(spy).toHaveBeenCalledExactlyOnceWith("[sol-opencode] TUI channel unavailable: no rpc");
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
+		it.each([
+			["rejects", "rpcEmitError"],
+			["throws synchronously", "rpcEmitThrows"],
+		] as const)("leaves the tool result unchanged when emit %s", async (_label, field) => {
+			const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				const opencode = await fusionFake();
+				cleanups.push(await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+				opencode[field] = new Error("emit broke");
+				const text = resultText(await opencode.callTool("write", fusedWrite, call));
+				expect(text).toContain("Created file successfully: a.txt");
+				expect(text).toContain("[then_run:succeeded]\nchecked");
+				await Promise.resolve();
+				expect(spy).toHaveBeenCalledExactlyOnceWith("[sol-opencode] saving event failed: emit broke");
+			} finally {
+				spy.mockRestore();
+			}
+		});
 	});
 });

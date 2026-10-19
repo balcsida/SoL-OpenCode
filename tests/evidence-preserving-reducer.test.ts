@@ -86,7 +86,7 @@ async function setup(
 		fake.seedTool(shellTool(options.shell ?? (async () => ({ output: "", exit: 0 }))));
 		cleanups.push(await registerActionFusion(fake.ctx(), config));
 	}
-	await register(fake.ctx(), config, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs });
+	await register(fake.ctx(), config, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }, fake.report);
 	return { dataHome, directory, fake };
 }
 
@@ -151,6 +151,12 @@ describe("evidence-preserving reducer", () => {
 		expect(model.calls[0]?.prompt).toMatch(/^You are a lossless test\/build output reducer\./u);
 		expect(model.calls[0]?.prompt).toContain("is_error=true");
 		expect(model.calls[0]?.prompt).toContain(`<untrusted_log>\n${BODY}\n</untrusted_log>`);
+		expect(fake.rpcEvents).toHaveLength(1);
+		expect(fake.rpcEvents[0]).toMatchObject({
+			name: "saving",
+			data: { sessionID: SESSION, mechanism: "Evidence-Preserving Reducer" },
+		});
+		expect((fake.rpcEvents[0]?.data as { saving: string }).saving).toMatch(/removed from future prompts$/u);
 	});
 
 	it("accepts only verified exact quotes and keeps SoL-Pi's on-disk identifiers", async () => {
@@ -257,6 +263,7 @@ describe("evidence-preserving reducer", () => {
 		};
 		const result = await shellCall(fake, "pytest -q", { output: BODY, exit: 1 });
 		expect(texts(result)[0]).toBe(BODY);
+		expect(fake.rpcEvents).toEqual([]);
 		expect((await journal()).at(-1)).toMatchObject({ kind: "fallback", reason: "reducer-model-unavailable" });
 	});
 

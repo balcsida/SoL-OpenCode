@@ -5,10 +5,12 @@
 	"type": "module",
 	"private": true,
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./tui": "./tui.tsx"
 	},
 	"files": [
 		"index.ts",
+		"tui.tsx",
 		"src",
 		"docs/compatibility.md",
 		"docs/configuration.md",

@@ -61,7 +61,7 @@ async function setup(
 	fake.seedTool(editTool(dir));
 	fake.seedTool(writeTool(dir, options.onWrite));
 	if (options.withShell !== false) fake.seedTool(shellTool(shell));
-	cleanups.push(await register(fake.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+	cleanups.push(await register(fake.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }, fake.report));
 	return { dir, fake };
 }
 
@@ -122,6 +122,9 @@ describe("action fusion then_run", () => {
 		expect(text(result)).toContain("[then_run:succeeded]\nwrite check passed");
 		expect(result.output).toMatchObject({ operation: "write", resource: "written.txt" });
 		expect(result.metadata).toMatchObject({ thenRun: { status: "succeeded", exit: 0 } });
+		expect(fake.rpcEvents).toEqual([
+			{ name: "saving", data: { sessionID: SESSION, mechanism: "Action Fusion", saving: "1 model round-trip avoided" } },
+		]);
 	});
 
 	it("reads then_run from the recorded call after OpenCode's input repair drops it", async () => {
@@ -209,6 +212,7 @@ describe("action fusion then_run", () => {
 
 		expect(text(result)).toContain("[then_run:failed]\nvalidation failed");
 		expect(text(result)).toContain("Exited with code 7");
+		expect(fake.rpcEvents).toEqual([]);
 		expect(result.metadata).toMatchObject({ thenRun: { status: "failed", exit: 7 } });
 		expect(await readFile(join(dir, "preserved.txt"), "utf8")).toBe("keep me\n");
 	});
@@ -303,6 +307,7 @@ describe("action fusion then_run", () => {
 			expect(result.metadata).toMatchObject({ thenRun: { status: "skipped" } });
 		}
 		expect(shellCalls).toBe(0);
+		expect(fake.rpcEvents).toEqual([]);
 		expect(await readFile(join(dir, "invalid.txt"), "utf8")).toBe("kept\n");
 	});
 
