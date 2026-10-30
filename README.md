@@ -28,7 +28,21 @@ Online Context Compact asks OpenCode for its own compaction at a selected plan b
 
 ## Install
 
-Clone the repository and install its locked dependencies:
+**From npm.** Add the package to `plugins` in `opencode.jsonc` (project or `~/.config/opencode/`), with the configuration as options. OpenCode installs it on the next start:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "@balcsida/sol-opencode",
+      "options": { "version": 1, "actionFusion": true, "observationPack": true }
+    }
+  ]
+}
+```
+
+**From a clone.** Clone the repository and install its locked dependencies:
 
 ```bash
 git clone https://github.com/balcsida/SoL-OpenCode
@@ -38,11 +52,10 @@ npm ci --ignore-scripts
 
 Then load it in one of two ways.
 
-**Option 1: a `plugins` entry, with the configuration as options.** In `opencode.jsonc` (project or `~/.config/opencode/`):
+**Option 1: a `plugins` entry, with the configuration as options.** As above, with the checkout as the package:
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
       "package": "/absolute/path/to/SoL-OpenCode",

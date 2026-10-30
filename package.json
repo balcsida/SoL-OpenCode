@@ -1,9 +1,16 @@
 {
-	"name": "sol-opencode",
+	"name": "@balcsida/sol-opencode",
 	"version": "0.1.0",
 	"description": "SoL-Pi's four token-efficiency mechanisms as an OpenCode v2 plugin",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/balcsida/SoL-OpenCode.git"
+	},
+	"homepage": "https://github.com/balcsida/SoL-OpenCode#readme",
 	"type": "module",
-	"private": true,
+	"publishConfig": {
+		"access": "public"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./tui": "./tui.tsx"
