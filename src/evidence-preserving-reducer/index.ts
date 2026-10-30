@@ -9,8 +9,8 @@
  *
  * In build and test trajectories only a few lines of a long log change the next
  * decision. This mechanism archives the raw log, sends it to the reducer
- * provider/model selected in the SoL-Pi config through `ctx.generate.text`, and
- * accepts the resulting receipt only when every quoted line is found byte for
+ * provider/model selected in the SoL-Pi config through `ctx.experimental.generate.text`,
+ * and accepts the resulting receipt only when every quoted line is found byte for
  * byte in the archive. A receipt that cannot be checked is discarded and the
  * original output reaches the frontier agent untouched.
  *
@@ -20,7 +20,7 @@
  */
 
 import type { SolPiConfig } from "../config.ts";
-import type { SolContext, ToolExecuteAfter, ToolResult } from "../context.ts";
+import type { GenerateApi, SolContext, ToolExecuteAfter, ToolResult } from "../context.ts";
 import { openCodeShellOutputDirectory, sessionRoot } from "../paths.ts";
 import { errorMessage, recallPage, toolFailure } from "../recall.ts";
 import { formatSavingsBytes, type ReportSaving } from "../savings.ts";
@@ -41,7 +41,7 @@ import { callReducer, type ProviderResult } from "./provider.ts";
 import { RECALL_TOOL, receiptText, validateReceipt } from "./receipt.ts";
 
 export interface ReducerDependencies {
-	readonly generate: SolContext["generate"];
+	readonly generate: GenerateApi;
 	readonly shellOutputDirectory: string;
 	readonly report: ReportSaving;
 }
@@ -233,7 +233,7 @@ export async function register(
 	});
 
 	const dependencies: ReducerDependencies = {
-		generate: ctx.generate,
+		generate: ctx.experimental.generate,
 		shellOutputDirectory: openCodeShellOutputDirectory(ctx.location.project.id),
 		report,
 	};

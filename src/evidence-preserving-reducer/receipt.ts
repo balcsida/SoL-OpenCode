@@ -67,7 +67,7 @@ export function reducerInput(command: string, isError: boolean, archive: Archive
 	].join("\n");
 }
 
-/** `ctx.generate.text` takes one prompt, so the instructions lead the input. */
+/** `ctx.experimental.generate.text` takes one prompt, so the instructions lead the input. */
 export function reducerPrompt(command: string, isError: boolean, archive: ArchiveObject, body: string): string {
 	return `${reducerInstructions()}\n\n${reducerInput(command, isError, archive, body)}`;
 }
@@ -168,7 +168,7 @@ export function receiptText(
 		`source_artifact=${archive.path}`,
 		`reducer_provider=${provider.provider}`,
 		`reducer_model=${provider.model}`,
-		// ctx.generate.text reports no usage.
+		// ctx.experimental.generate.text reports no usage.
 		`reducer_total_tokens=${provider.usage?.totalTokens ?? "unavailable"}`,
 		"verified_evidence:",
 	];

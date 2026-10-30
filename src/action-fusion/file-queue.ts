@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const queueTails = new Map<string, Promise<void>>();
 
 /**
- * OpenCode's `FSUtil.windowsPath` (util/src/fs-util.ts at v2.0.18): on Windows,
+ * OpenCode's `FSUtil.windowsPath` (util/src/fs-util.ts at v2.2.3, unchanged since v2.0.18): on Windows,
  * Git Bash, MSYS, Cygwin, and WSL drive paths become native drive paths before
  * the built-in `edit` and `write` tools touch the filesystem.
  */
