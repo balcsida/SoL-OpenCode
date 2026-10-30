@@ -13,7 +13,10 @@
  *
  * The mechanism never edits history. It rewrites only the outgoing request in
  * `ctx.session.hook("context")`, so the stored session stays intact and recall
- * keeps working after compaction or a restart.
+ * keeps working after compaction or a restart. OpenCode's own compaction
+ * request (`hook("compaction")`) gets the same projection, so a summary
+ * requested by Online Context Compact reads the packed prefix the provider has
+ * already cached instead of resending every archived observation.
  */
 
 import { join } from "node:path";
@@ -73,7 +76,9 @@ export async function register(ctx: SolContext, _config: SolPiConfig, report: Re
 		});
 	});
 
-	await ctx.session.hook("context", (event) => projectObservations(event, sentCounts, ledgerFor, report));
+	const project = (event: ContextHookEvent) => projectObservations(event, sentCounts, ledgerFor, report);
+	await ctx.session.hook("context", project);
+	await ctx.session.hook("compaction", project);
 }
 
 async function recall(

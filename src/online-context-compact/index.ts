@@ -7,35 +7,25 @@
  * Online Context Compact - compact at completed plan steps when it pays.
  *
  * The agent keeps its plan current with `update_plan`. A newly completed step
- * is a candidate compaction point; at the next provider request the economic
- * gate (SoL-Pi's `decideCompaction`, driven by `cacheWriteReadRatio`) and the
- * window-pressure check decide whether compacting now is worth the cache write.
+ * is a candidate compaction point; the economic gate (SoL-Pi's
+ * `decideCompaction`, driven by `cacheWriteReadRatio`) and the window-pressure
+ * check decide whether compacting now is worth the cache write.
  *
- * OpenCode v2.0.18 gives plugins no way to request its own compaction, so a
- * selected boundary is compacted in the outgoing request: the older messages
- * are summarized once through `ctx.session.generate` (the session's model and
- * cached prefix), and every later request carries that summary in their place.
- * Persisted history is never changed, and the run simply continues: there is
- * no abort and no continuation turn to schedule.
+ * As SoL-Pi asks Pi for its native compaction, a selected boundary asks
+ * OpenCode for its own compaction with `ctx.session.compact`, delivered as a
+ * steer so it runs before the next model step of the running session. The
+ * reminder to continue the plan follows it as a synthetic message. OpenCode
+ * writes the summary, keeps its recent tail verbatim, and records the
+ * compaction in the session's history; this mechanism only decides when.
  */
 
-import { randomUUID } from "node:crypto";
 import type { SolPiConfig } from "../config.ts";
-import type { Cleanup, ContextHookEvent, GenerateHookEvent, LLMMessage, SolContext, ToolResult } from "../context.ts";
+import type { Cleanup, ContextHookEvent, LLMMessage, SolContext, ToolResult } from "../context.ts";
 import { errorMessage, toolFailure } from "../recall.ts";
 import { formatSavingsCount, type ReportSaving } from "../savings.ts";
 import { type CompactionDecision, DEFAULT_COMPACTION_ECONOMICS, decideCompaction } from "./economics.ts";
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
-import {
-	applyCheckpoint,
-	archivedTokens,
-	type CutPoint,
-	findCutPoint,
-	isSummaryPrompt,
-	requestTokens,
-	summaryPrompt,
-	tokenEstimate,
-} from "./projection.ts";
+import { archivedTokens, findCutPoint, POST_COMPACTION_PLAN_REMINDER, requestTokens, tokenEstimate } from "./projection.ts";
 import {
 	type OnlineState,
 	type ProgressSummary,
@@ -45,31 +35,34 @@ import {
 	recordCorrection,
 	recordProviderRequest,
 } from "./state.ts";
-import { type Checkpoint, loadSession, saveSession, storageKey } from "./store.ts";
+import { loadSession, saveSession, storageKey } from "./store.ts";
 import { type PlanUpdateInput, registerOnlineTools } from "./tools.ts";
 
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 export const DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE = 1_000;
-export const SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
 
 export interface OnlineContextCompactOptions {
 	readonly keepRecentTokens?: number;
 }
 
+/** The last packed request the context hook saw for a session: what the next step would resend. */
+interface ObservedRequest {
+	readonly messages: readonly LLMMessage[];
+	readonly model: ContextHookEvent["model"];
+	/** The larger of the estimate and the provider-counted size, as SoL-Pi's contextTokens. */
+	readonly writeTokens: number;
+}
+
 interface SessionRuntime {
 	state: OnlineState;
-	checkpoint: Checkpoint | undefined;
 	lastDecision: Record<string, unknown> | undefined;
-	pendingBoundary: { readonly toolCallId: string } | undefined;
+	observed: ObservedRequest | undefined;
+	/** A compaction this mechanism requested and OpenCode has not finished. */
+	selected: { readonly inboxID: string; readonly decision: CompactionDecision } | undefined;
 	/** Provider-counted size of the latest completed step, like Pi's getContextUsage(). */
 	reportedTokens: number | undefined;
 	busy: boolean;
 	lock: Promise<void>;
-}
-
-interface PendingSummary {
-	readonly nonce: string;
-	readonly messages: readonly LLMMessage[];
 }
 
 export function resolveKeepRecentTokens(value: number | undefined): number {
@@ -106,15 +99,6 @@ function stepTokens(tokens: unknown): number | undefined {
 	return total > 0 ? total : undefined;
 }
 
-function toolResultFor(messages: readonly LLMMessage[], toolCallId: string) {
-	for (const message of messages) {
-		for (const part of message.content) {
-			if (part.type === "tool-result" && part.id === toolCallId) return part;
-		}
-	}
-	return undefined;
-}
-
 export async function register(
 	ctx: SolContext,
 	config: SolPiConfig,
@@ -124,7 +108,6 @@ export async function register(
 	const keepRecentTokens = resolveKeepRecentTokens(options.keepRecentTokens);
 	const cacheWriteReadRatio = config.cacheWriteReadRatio;
 	const sessions = new Map<string, Promise<SessionRuntime>>();
-	const pendingSummaries = new Map<string, PendingSummary>();
 	const windows = new Map<string, number | null>();
 
 	const runtimeFor = (sessionID: string): Promise<SessionRuntime> => {
@@ -132,7 +115,8 @@ export async function register(
 		if (!runtime) {
 			runtime = loadSession(ctx.storage, sessionID).then((stored) => ({
 				...stored,
-				pendingBoundary: undefined,
+				observed: undefined,
+				selected: undefined,
 				reportedTokens: undefined,
 				busy: false,
 				lock: Promise.resolve(),
@@ -173,6 +157,58 @@ export async function register(
 		return windows.get(key) ?? null;
 	};
 
+	/** SoL-Pi's turn_end decision, priced from the request that produced this plan update. */
+	const decide = async (runtime: SessionRuntime, observed: ObservedRequest): Promise<CompactionDecision> => {
+		// Price the prefix the summary would replace as projected: ObservationPack
+		// placeholders count at their size, as in SoL-Pi's observed projection.
+		const cut = findCutPoint(observed.messages, keepRecentTokens);
+		const archiveTokens = cut ? archivedTokens(observed.messages, cut) : 0;
+		const state = runtime.state;
+		const priced = decideCompaction({
+			writeTokens: observed.writeTokens,
+			archiveTokens,
+			memoTokens: DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
+			contextTokens: observed.writeTokens,
+			completedBoundaryRequestCounts: state.completedBoundaryRequestCounts,
+			remainingBoundaries: state.plan.filter((step) => step.status !== "completed").length,
+			averageContextTokenIncrement:
+				state.positiveContextDeltaCount === 0 ? null : state.positiveContextDeltaTotal / state.positiveContextDeltaCount,
+			contextWindowTokens: await contextWindow(observed.model),
+			priorCompactionCount: state.nativeCompactionCount,
+			requestsSinceLastCompaction:
+				state.lastCompactionRequestCount === null ? null : state.requestCount - state.lastCompactionRequestCount,
+			carriedDebtTokens: state.cacheDebtTokens,
+			cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
+			cacheWriteReadRatio,
+			economics: DEFAULT_COMPACTION_ECONOMICS,
+		});
+		// A manual compaction that finds nothing to compact fails the running
+		// session, so a boundary without a cut is never requested.
+		return cut ? priced : { ...priced, compact: false, reason: "native_not_compactable" };
+	};
+
+	/** Ask OpenCode to compact before its next step, then remind the agent to continue the plan. */
+	const requestCompaction = async (sessionID: string, runtime: SessionRuntime, decision: CompactionDecision): Promise<boolean> => {
+		try {
+			const item = await ctx.session.compact({ sessionID, delivery: "steer" });
+			runtime.selected = { inboxID: item.id, decision };
+		} catch (error) {
+			console.error(`[online-context-compact] compaction request failed; context left as is: ${errorMessage(error)}`);
+			return false;
+		}
+		try {
+			await ctx.session.synthetic({
+				sessionID,
+				text: POST_COMPACTION_PLAN_REMINDER,
+				description: "Online context compaction reminder",
+				delivery: "steer",
+			});
+		} catch (error) {
+			console.error(`[online-context-compact] plan reminder failed: ${errorMessage(error)}`);
+		}
+		return true;
+	};
+
 	await registerOnlineTools(ctx, {
 		updatePlan: async (input) => {
 			const runtime = await runtimeFor(input.sessionID);
@@ -185,7 +221,13 @@ export async function register(
 				const completedIds = transition.completedSteps.map((step) => step.id);
 				if (completedIds.length > 0) {
 					runtime.state = recordBoundary(runtime.state, steps, progressSummary(input, completedIds[0] ?? ""));
-					runtime.pendingBoundary ??= { toolCallId: input.toolCallId };
+					// A boundary is decided as soon as it is recorded, like SoL-Pi's turn_end:
+					// the request that produced this call has been counted and observed.
+					if (runtime.observed && !runtime.selected) {
+						const decision = await decide(runtime, runtime.observed);
+						const requested = decision.compact ? await requestCompaction(input.sessionID, runtime, decision) : false;
+						runtime.lastDecision = { ...decision, requested, at: Date.now() };
+					}
 				} else {
 					runtime.state = { ...runtime.state, plan: [...steps] };
 				}
@@ -205,123 +247,17 @@ export async function register(
 		},
 	});
 
-	/** SoL-Pi's turn_end decision, taken at the request that carries the update_plan result. */
-	const decide = async (
-		event: ContextHookEvent,
-		runtime: SessionRuntime,
-		writeTokens: number,
-	): Promise<{ decision: CompactionDecision; cut: CutPoint | undefined } | undefined> => {
-		const boundary = runtime.pendingBoundary;
-		runtime.pendingBoundary = undefined;
-		if (!boundary) return undefined;
-		const result = toolResultFor(event.messages, boundary.toolCallId);
-		if (!result || result.result.type === "error") return undefined;
-
-		// Price the prefix the summary would replace as projected: ObservationPack
-		// has already packed this request, so its placeholders count at their size.
-		const cut = findCutPoint(event.messages, keepRecentTokens);
-		const archiveTokens = cut ? archivedTokens(event.messages, cut) : 0;
-		const state = runtime.state;
-		const priced = decideCompaction({
-			writeTokens,
-			archiveTokens,
-			memoTokens: DEFAULT_NATIVE_SUMMARY_TOKEN_ESTIMATE,
-			contextTokens: writeTokens,
-			completedBoundaryRequestCounts: state.completedBoundaryRequestCounts,
-			remainingBoundaries: state.plan.filter((step) => step.status !== "completed").length,
-			averageContextTokenIncrement:
-				state.positiveContextDeltaCount === 0 ? null : state.positiveContextDeltaTotal / state.positiveContextDeltaCount,
-			contextWindowTokens: await contextWindow(event.model),
-			priorCompactionCount: state.nativeCompactionCount,
-			requestsSinceLastCompaction:
-				state.lastCompactionRequestCount === null ? null : state.requestCount - state.lastCompactionRequestCount,
-			carriedDebtTokens: state.cacheDebtTokens,
-			cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
-			cacheWriteReadRatio,
-			economics: DEFAULT_COMPACTION_ECONOMICS,
-		});
-		const decision: CompactionDecision = cut ? priced : { ...priced, compact: false, reason: "native_not_compactable" };
-		return { decision, cut };
-	};
-
-	const compact = async (
-		event: ContextHookEvent,
-		runtime: SessionRuntime,
-		decision: CompactionDecision,
-		cut: CutPoint,
-	): Promise<boolean> => {
-		const nonce = randomUUID();
-		pendingSummaries.set(event.sessionID, { nonce, messages: event.messages.slice(0, cut.index) });
-		let summary: string;
-		try {
-			summary = (await ctx.session.generate({ sessionID: event.sessionID, prompt: summaryPrompt(nonce) })).text.trim();
-		} catch (error) {
-			console.error(`[online-context-compact] summary failed; request left unchanged: ${errorMessage(error)}`);
-			return false;
-		} finally {
-			pendingSummaries.delete(event.sessionID);
-		}
-		if (!summary) return false;
-
-		runtime.checkpoint = {
-			keptMessageID: cut.messageID,
-			summary,
-			archivedMessages: cut.index,
-			createdAt: Date.now(),
-		};
-		runtime.state = recordCompaction(runtime.state, {
-			debtTokens: decision.postCompactionTokens * (decision.incrementalCacheCostRatio ?? 0),
-			repaymentTokens: Math.max(0, decision.archiveTokens - decision.memoTokens),
-		});
-		runtime.reportedTokens = undefined;
-		applyCheckpoint(event, runtime.checkpoint);
-		const removed = Math.max(0, decision.archiveTokens - tokenEstimate(summary));
-		if (removed > 0) {
-			report({
-				sessionID: event.sessionID,
-				mechanism: "Online Context Compact",
-				saving: formatSavingsCount(removed, "context tokens removed"),
-			});
-		}
-		return true;
-	};
-
 	// Registered after ObservationPack, so the estimate sees the packed request.
 	await ctx.session.hook("context", async (event) => {
 		const runtime = await runtimeFor(event.sessionID);
 		await withLock(runtime, async () => {
-			if (applyCheckpoint(event, runtime.checkpoint) === "stale") runtime.checkpoint = undefined;
-
 			const estimated = requestTokens(event);
 			const reported = runtime.reportedTokens;
 			const writeTokens = validPositiveInteger(reported) ? Math.max(reported, estimated) : estimated;
-			// Count the request before deciding, as SoL-Pi's before_provider_request
-			// precedes its turn_end decision; a compaction then clears the size baseline.
+			runtime.observed = { messages: event.messages, model: event.model, writeTokens };
 			runtime.state = recordProviderRequest(runtime.state, writeTokens);
-			const selected = await decide(event, runtime, writeTokens);
-			if (selected) {
-				const compacted =
-					selected.decision.compact && selected.cut ? await compact(event, runtime, selected.decision, selected.cut) : false;
-				runtime.lastDecision = {
-					...selected.decision,
-					compacted,
-					summaryFailed: selected.decision.compact && !compacted,
-					at: Date.now(),
-				};
-			}
 			await save(event.sessionID, runtime);
 		});
-	});
-
-	// The summary request reuses the primary request's projected prefix exactly,
-	// so the provider's prompt cache covers it, and drops the kept tail.
-	await ctx.session.hook("generate", (event: GenerateHookEvent) => {
-		const pending = pendingSummaries.get(event.sessionID);
-		if (!pending) return;
-		const prompt = event.messages.at(-1);
-		if (!prompt || !isSummaryPrompt(prompt, pending.nonce)) return;
-		event.messages = [...pending.messages, prompt];
-		event.options.maxTokens = SUMMARY_MAX_OUTPUT_TOKENS;
 	});
 
 	// SoL-Pi treated a steering message or a `CORRECTION:` prompt as a correction.
@@ -333,7 +269,6 @@ export async function register(
 		const correction = text.startsWith("CORRECTION:") || (runtime.busy && event.delivery === "steer");
 		await withLock(runtime, async () => {
 			if (correction) {
-				runtime.pendingBoundary = undefined;
 				runtime.state = recordCorrection(runtime.state);
 			} else {
 				// A new task after a completed plan starts its own request horizon.
@@ -354,7 +289,7 @@ export async function register(
 		}
 		if (!sessions.has(sessionID)) {
 			// Nothing to update for a session this instance has not seen, except
-			// an OpenCode compaction, which must retire a stored checkpoint.
+			// a compaction or revert, which the stored state must reflect.
 			if (type !== "session.compaction.ended" && type !== "session.revert.committed") return;
 		}
 		const runtime = await runtimeFor(sessionID);
@@ -369,18 +304,42 @@ export async function register(
 		} else if (type === "session.step.ended") {
 			runtime.reportedTokens = stepTokens(data.tokens);
 		} else if (type === "session.compaction.ended") {
-			// OpenCode compacted natively: its summary supersedes ours, and the
-			// compaction carries no cache debt of SoL's making.
 			await withLock(runtime, async () => {
-				runtime.checkpoint = undefined;
-				runtime.pendingBoundary = undefined;
+				// The selected boundary compaction carries SoL's cache debt. OpenCode's
+				// own threshold compaction, or a user's, carries none.
+				const selected = data.reason === "manual" ? runtime.selected : undefined;
+				runtime.selected = undefined;
+				runtime.observed = undefined;
 				runtime.reportedTokens = undefined;
-				runtime.state = recordCompaction(runtime.state, { debtTokens: 0, repaymentTokens: 0 });
+				const decision = selected?.decision;
+				runtime.state = recordCompaction(runtime.state, {
+					debtTokens: decision ? decision.postCompactionTokens * (decision.incrementalCacheCostRatio ?? 0) : 0,
+					repaymentTokens: decision ? Math.max(0, decision.archiveTokens - decision.memoTokens) : 0,
+				});
+				if (decision) {
+					runtime.lastDecision = { ...runtime.lastDecision, compacted: true };
+					const summary = typeof data.text === "string" ? data.text : "";
+					const removed = Math.max(0, decision.archiveTokens - tokenEstimate(summary));
+					if (removed > 0) {
+						report({
+							sessionID,
+							mechanism: "Online Context Compact",
+							saving: formatSavingsCount(removed, "context tokens removed"),
+						});
+					}
+				}
+				await save(sessionID, runtime);
+			});
+		} else if (type === "session.compaction.failed") {
+			await withLock(runtime, async () => {
+				if (!runtime.selected || data.reason !== "manual") return;
+				runtime.selected = undefined;
+				runtime.lastDecision = { ...runtime.lastDecision, compacted: false, compactionFailed: true };
 				await save(sessionID, runtime);
 			});
 		} else if (type === "session.revert.committed") {
 			await withLock(runtime, async () => {
-				runtime.pendingBoundary = undefined;
+				runtime.observed = undefined;
 				runtime.state = recordCorrection(runtime.state);
 				await save(sessionID, runtime);
 			});
@@ -418,7 +377,7 @@ export {
 	type PlanStatus,
 	type PlanStep,
 } from "./plan.ts";
-export { BOUNDARY_COMPACTION_INSTRUCTIONS, POST_COMPACTION_PLAN_REMINDER } from "./projection.ts";
+export { POST_COMPACTION_PLAN_REMINDER } from "./projection.ts";
 export {
 	initialOnlineState,
 	ONLINE_STATE_ENTRY,

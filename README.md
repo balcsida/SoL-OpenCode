@@ -16,14 +16,14 @@ The rules carry over from SoL-Pi:
 - **No OpenCode patches.** Only the public `@opencode/plugin` API is used.
 - **Explicit opt-in.** A missing configuration leaves every mechanism disabled.
 - **Preserve evidence.** Originals stay archived locally, and any mechanism failure leaves the original result or request unchanged.
-- **Persisted history is never edited.** ObservationPack and Online Context Compact change only the outgoing request.
-- **Use OpenCode's runtime choices.** Authentication, providers, the main model, and the shell stay under OpenCode's control. The reducer and the compaction summary go through `ctx.generate.text` and `ctx.session.generate`.
+- **Persisted history is never edited.** ObservationPack changes only the outgoing request; Online Context Compact only asks OpenCode to compact.
+- **Use OpenCode's runtime choices.** Authentication, providers, the main model, and the shell stay under OpenCode's control. The reducer goes through `ctx.experimental.generate.text`, and compaction is OpenCode's own, requested with `ctx.session.compact`.
 
-Online Context Compact works differently from SoL-Pi. OpenCode v2.0.18 gives plugins no way to request its own compaction, so a selected plan boundary is compacted in the outgoing request: the older messages are summarized once (reusing the cached prefix), and later requests carry the summary in their place. See [docs/compatibility.md](docs/compatibility.md) for this and the other differences.
+Online Context Compact asks OpenCode for its own compaction at a selected plan boundary, as SoL-Pi asks Pi, and then reminds the agent to continue the plan. See [docs/compatibility.md](docs/compatibility.md) for this and the other differences from SoL-Pi.
 
 ## Requirements
 
-- OpenCode **2.0.18** (`npm install -g @opencode/cli@2.0.18`)
+- OpenCode **2.2.3** (`npm install -g @opencode/cli@2.2.3`)
 - Node.js 22.19 or newer and npm, to install this package's dependencies
 
 ## Install
@@ -97,7 +97,7 @@ Read [SECURITY.md](SECURITY.md) before enabling the reducer.
 |---|---|
 | [docs/configuration.md](docs/configuration.md) | Sources, schema, defaults, runtime inputs |
 | [docs/compatibility.md](docs/compatibility.md) | OpenCode APIs used, host behaviour relied on, differences from SoL-Pi |
-| [docs/verification.md](docs/verification.md) | Live results on OpenCode 2.0.18 |
+| [docs/verification.md](docs/verification.md) | Live results on OpenCode 2.2.3 |
 | [docs/port-audit.md](docs/port-audit.md) | The Pi → OpenCode v2 API audit behind the port |
 | [SECURITY.md](SECURITY.md) | Local storage, remote reduction, sensitive behavior |
 
@@ -110,7 +110,7 @@ scripts/live/verify.sh af-op      # real OpenCode session, Action Fusion + Obser
 scripts/live/verify.sh all        # real OpenCode session, all four mechanisms
 ```
 
-The live checks need `opencode` 2.0.18 on `PATH`. They use a scripted local endpoint, so they need no credentials and cost nothing. `./upstream/` is an optional, git-ignored clone of SoL-Pi kept for reference.
+The live checks need `opencode` 2.2.3 on `PATH`. They use a scripted local endpoint, so they need no credentials and cost nothing. `./upstream/` is an optional, git-ignored clone of SoL-Pi kept for reference.
 
 ## License
 

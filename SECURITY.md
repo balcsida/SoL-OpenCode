@@ -6,10 +6,10 @@ SoL-OpenCode is an OpenCode plugin. It runs inside the OpenCode server, with tha
 
 - **Action Fusion** runs a command requested by the model after a file mutation. The command goes through OpenCode's own `shell` tool, so OpenCode's shell permissions, agent rules, and `shell` hooks apply to it. The permission request is attributed to the `edit`/`write` call.
 - **ObservationPack** stores large tool results under `<OpenCode data>/sol-opencode/<sessionID>/observation-pack/`.
-- **Evidence-Preserving Reducer** archives diagnostic logs locally. When explicitly enabled, it sends eligible logs to its configured reducer model through `ctx.generate.text`, using OpenCode-managed credentials.
+- **Evidence-Preserving Reducer** archives diagnostic logs locally. When explicitly enabled, it sends eligible logs to its configured reducer model through `ctx.experimental.generate.text`, using OpenCode-managed credentials.
 - The reducer skips text that matches its likely-secret detector, but that detector is a precaution, not a complete secret scanner. Do not enable remote reduction for workloads whose logs must remain local.
 - The reducer may read a long `shell` result's full output file. It accepts only a regular, non-symlink `sh_*.out` file directly inside OpenCode's shell output directory for the current project, and only when the shell reported truncation. It copies eligible content into the session archive before any model call.
-- **Online Context Compact** sends the session's older conversation to the session's own model to be summarized, through `ctx.session.generate`. See below for what it stores.
+- **Online Context Compact** asks OpenCode to compact the session (`ctx.session.compact`), which sends the conversation to the session's own model to be summarized, as `/compact` does. See below for what it stores.
 - **Project configuration.** OpenCode v2 has no project-trust gate, so a project's `.opencode/sol-pi.json` is read without one, just as its `.opencode/plugins/` code is loaded. Open untrusted repositories with care.
 
 ## Online Context Compact data

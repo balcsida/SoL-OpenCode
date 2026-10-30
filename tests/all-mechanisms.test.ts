@@ -70,8 +70,9 @@ describe("SoL-OpenCode plugin entry", () => {
 		expect(opencode.toolHooks["execute.after"]).toHaveLength(2);
 		// Action Fusion (schema), ObservationPack, then Online Context Compact.
 		expect(opencode.sessionHooks.get("context")).toHaveLength(3);
-		expect(opencode.sessionHooks.get("generate")).toHaveLength(2);
-		expect(opencode.sessionHooks.get("compaction")).toHaveLength(1);
+		expect(opencode.sessionHooks.get("generate")).toHaveLength(1);
+		// Action Fusion (schema) and ObservationPack project OpenCode's summary request too.
+		expect(opencode.sessionHooks.get("compaction")).toHaveLength(2);
 		expect(opencode.sessionHooks.get("prompt")).toHaveLength(1);
 	});
 
@@ -146,7 +147,7 @@ describe("SoL-OpenCode plugin entry", () => {
 				expect([...opencode.tools.keys()]).toEqual(["obs_recall", "evidence_recall", "update_plan"]);
 				expect(opencode.toolHooks["execute.before"]).toHaveLength(1);
 				expect(opencode.toolHooks["execute.after"]).toHaveLength(2);
-				expect(opencode.sessionHooks.get("compaction")).toHaveLength(1);
+				expect(opencode.sessionHooks.get("compaction")).toHaveLength(2);
 				expect(opencode.rpcRegistrations).toHaveLength(0);
 				await cleanup();
 				expect(spy).toHaveBeenCalledExactlyOnceWith("[sol-opencode] TUI channel unavailable: no rpc");
