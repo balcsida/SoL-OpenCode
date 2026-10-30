@@ -5,7 +5,7 @@
 
 /**
  * The slice of the OpenCode v2 Promise plugin context this plugin uses, and the
- * hook event shapes it reads. Types come from `@opencode/plugin@2.0.18`
+ * hook event shapes it reads. Types come from `@opencode/plugin@2.2.3`
  * (`dist/promise/*.d.ts`); tests drive the mechanisms through a fake that
  * implements only these members.
  */
@@ -16,8 +16,11 @@ import type { Error as ToolErrorClass, Result } from "@opencode/plugin/promise/t
 
 export type SolContext = Pick<
 	Plugin.Context,
-	"event" | "generate" | "location" | "model" | "options" | "rpc" | "session" | "storage" | "tool"
+	"event" | "experimental" | "location" | "model" | "options" | "rpc" | "session" | "storage" | "tool"
 >;
+
+/** `ctx.experimental.generate`: stateless text generation through OpenCode (`ctx.generate` is deprecated). */
+export type GenerateApi = SolContext["experimental"]["generate"];
 
 export type Cleanup = () => Promise<void> | void;
 

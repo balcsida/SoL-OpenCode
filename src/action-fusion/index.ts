@@ -13,7 +13,7 @@
  * and returns one combined observation.
  *
  * OpenCode's built-in tools stay untouched. A Promise plugin that wrapped their
- * executors would turn their typed failures into defects, so the mechanism is
+ * executors would reduce their typed failures to a message, so the mechanism is
  * built from hooks instead:
  *
  * - request hooks advertise `then_run` in the live `edit`/`write` schemas;

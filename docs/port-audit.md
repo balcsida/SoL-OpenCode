@@ -1,6 +1,6 @@
 # SoL-Pi → OpenCode v2 port audit (Phase 1)
 
-Status: **Phase 1 audit, kept as written.** Phase 2 is done; see [compatibility.md](compatibility.md) and [verification.md](verification.md).
+Status: **Phase 1 audit, kept as written.** Phase 2 is done; see [compatibility.md](compatibility.md) and [verification.md](verification.md). On OpenCode 2.2.3 (which added `compact` to the plugin session domain) Online Context Compact moved from request-side checkpoints to OpenCode's own compaction, so §4.1's redesign no longer applies.
 
 ## Phase 2 outcome
 

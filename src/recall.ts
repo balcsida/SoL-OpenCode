@@ -27,9 +27,9 @@ export interface RecallPage {
 }
 
 /**
- * Promise-plugin tool executors cannot report a typed failure: a rejection is
- * a defect that bypasses `execute.after` (plugin/src/promise/adapter.ts:615).
- * Expected failures are therefore returned as ordinary content.
+ * Expected failures are returned as ordinary content with `metadata.error`,
+ * so OpenCode records them as completed calls the agent can read, instead of
+ * as tool errors.
  */
 export function toolFailure(message: string, metadata: Record<string, unknown> = {}): ToolResult {
 	return { content: message, metadata: { ...metadata, error: message } };

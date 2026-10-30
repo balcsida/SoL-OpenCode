@@ -1,12 +1,12 @@
-# Live verification on OpenCode 2.0.18
+# Live verification on OpenCode 2.2.3
 
-These results come from `scripts/live/verify.sh`, run on 2026-09-28 against `opencode v2.0.18` (`@opencode/cli` 2.0.18, Linux x64, Node 22.22). They predate the 2026-10 sync with SoL-Pi (see [compatibility.md](compatibility.md)): the checkpoint reminder quoted in step 3 now asks the model to continue the current plan, and the runs have not been repeated.
+These results come from `scripts/live/verify.sh`, run on 2026-10-30 against `opencode v2.2.3` (`@opencode/cli` 2.2.3, macOS arm64, Node 22). They replace the 2.0.18 results of 2026-09-28: the harness is unchanged apart from a longer scripted command in step 2 and the summary reply, which now fills OpenCode's own template.
 
 Each run is one real `opencode run --standalone --auto` session in a scratch project that loads this checkout from `.opencode/plugins/`. The model is a scripted OpenAI-compatible endpoint on `127.0.0.1`, so the runs are zero-spend and deterministic. Everything else is the real OpenCode:
 
 - the session runner and tool execution;
 - permissions, the shell, and input repair;
-- persistence and plugin loading.
+- persistence, compaction, and plugin loading.
 
 Two logs are shown for each run:
 
@@ -17,50 +17,50 @@ Request kinds in the endpoint log:
 
 - `agent`: the agent loop.
 - `auxiliary`: OpenCode's title request.
-- `reducer`: `ctx.generate.text` from the reducer.
-- `summary`: `ctx.session.generate` from Online Context Compact.
+- `reducer`: `ctx.experimental.generate.text` from the reducer.
+- `summary`: OpenCode's own compaction request, triggered by Online Context Compact.
 
 ## Step 1: `npm run check`
 
 ```text
 > tsc --noEmit
- Test Files  12 passed (12)
-      Tests  130 passed (130)
+ Test Files  14 passed (14)
+      Tests  167 passed (167)
 ```
 
 ## Step 2: Action Fusion + ObservationPack
 
 `scripts/live/verify.sh af-op`, with `sol-pi.json` enabling only `actionFusion` and `observationPack`. The scripted model makes five calls:
 
-1. `write` with `then_run: { command: "cat report.txt && seq 1 4000" }`
+1. `write` with `then_run: { command: "cat report.txt && seq 100001 104000" }`
 2. two `shell` calls
 3. `obs_recall` on the placeholder's id
 4. a final answer
 
 ```text
 What the provider endpoint received:
-# 1 auxiliary bytes=  2397 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 2 agent     bytes= 33971 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 3 agent     bytes= 46549 messages=  4 placeholders=0 receipts=0 checkpoints=0
-# 4 agent     bytes= 46777 messages=  6 placeholders=0 receipts=0 checkpoints=0
-# 5 agent     bytes= 36345 messages=  8 placeholders=1 receipts=0 checkpoints=0
-# 6 agent     bytes= 39169 messages= 10 placeholders=1 receipts=0 checkpoints=0
+# 1 auxiliary bytes=  2139 messages=  2 placeholders=0 receipts=0 checkpoints=0
+# 2 agent     bytes= 56290 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 3 agent     bytes= 72802 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 4 agent     bytes= 73030 messages=  6 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 5 agent     bytes= 58636 messages=  8 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
+# 6 agent     bytes= 62252 messages= 10 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
 
 Context hook after SoL-OpenCode vs persisted history (tool-result bytes):
 request  1: outgoing messages= 1 tool-result bytes=     0 | persisted messages= 1 tool-result bytes=     0
-request  2: outgoing messages= 3 tool-result bytes= 12341 | persisted messages= 2 tool-result bytes= 12341
-request  3: outgoing messages= 5 tool-result bytes= 12356 | persisted messages= 3 tool-result bytes= 12381
-request  4: outgoing messages= 7 tool-result bytes=  1664 | persisted messages= 4 tool-result bytes= 12420
-request  5: outgoing messages= 9 tool-result bytes=  4250 | persisted messages= 5 tool-result bytes= 15031
+request  2: outgoing messages= 3 tool-result bytes= 16268 | persisted messages= 2 tool-result bytes= 16268
+request  3: outgoing messages= 5 tool-result bytes= 16283 | persisted messages= 3 tool-result bytes= 16308
+request  4: outgoing messages= 7 tool-result bytes=  1629 | persisted messages= 4 tool-result bytes= 16347
+request  5: outgoing messages= 9 tool-result bytes=  5007 | persisted messages= 5 tool-result bytes= 19750
 ```
 
 - **Action Fusion.** The `write` ran the command in the same call. Its result is the write confirmation, then `[then_run:succeeded]`, then the command output, which OpenCode's shell truncated to its last 2,000 lines.
-- **Packing.** The 10,260-byte fused result went to the provider in full on the next two requests (#3, #4). From #5 on it was a 1,439-byte placeholder, and the request shrank from 46,777 to 36,345 bytes.
-- **History.** The persisted tool results never shrank: 12,420 bytes while the outgoing request carried 1,664.
-- **Archive.** The original bytes are archived at `<data>/opencode/sol-opencode/<session>/observation-pack/objects/obs_….txt` (10,260 bytes). The ledger records `full`, `full`, `placeholder`.
-- **Recall.** `obs_recall` is a direct tool, and it returned the first exact page: `[obs_recall id=obs_1d917a52f3cccf7071d0d02e offset=0 next_offset=2039 eof=false]`.
+- **Packing.** The fused result went to the provider in full on the next two requests (#3, #4). From #5 on it was a placeholder, and the request shrank from 73,030 to 58,636 bytes.
+- **History.** The persisted tool results never shrank: 16,347 bytes while the outgoing request carried 1,629.
+- **Archive.** The original bytes are archived at `<data>/opencode/sol-opencode/<session>/observation-pack/objects/obs_….txt`. The ledger records `full`, `full`, `placeholder`.
+- **Recall.** `obs_recall` is a direct tool, and it returned the first exact page (request 5 carries it: 5,007 bytes of tool results).
 
-The same run with the plugin loaded from an `opencode.jsonc` `plugins` entry, and the configuration passed as plugin `options` instead of `sol-pi.json`, produced the same packing: a placeholder from request #5.
+On 2.2.3 the shell's truncation notice is a few bytes shorter than on 2.0.18, which put the earlier script's `seq 1 4000` output just under ObservationPack's 10 KiB threshold; the scripted command now prints longer lines.
 
 ## Step 3: all four mechanisms
 
@@ -77,31 +77,31 @@ The same run with the plugin loaded from an `opencode.jsonc` `plugins` entry, an
 
 ```text
 What the provider endpoint received:
-# 1 auxiliary bytes=  2425 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 2 agent     bytes= 35870 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 3 agent     bytes= 36591 messages=  4 placeholders=0 receipts=0 checkpoints=0
-# 4 reducer   bytes= 14640 messages=  1 placeholders=0 receipts=0 checkpoints=0
-# 5 agent     bytes= 37998 messages=  6 placeholders=0 receipts=1 checkpoints=0
-# 6 agent     bytes= 51658 messages=  8 placeholders=0 receipts=1 checkpoints=0
-# 7 agent     bytes= 68131 messages= 10 placeholders=0 receipts=1 checkpoints=0
-# 8 agent     bytes= 64299 messages= 12 placeholders=1 receipts=1 checkpoints=0
-# 9 agent     bytes= 57732 messages= 14 placeholders=2 receipts=1 checkpoints=0
+# 1 auxiliary bytes=  2167 messages=  2 placeholders=0 receipts=0 checkpoints=0
+# 2 agent     bytes= 58361 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 3 agent     bytes= 59082 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 4 reducer   bytes= 14614 messages=  1 placeholders=0 receipts=0 checkpoints=0
+# 5 agent     bytes= 60420 messages=  6 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 6 agent     bytes= 74068 messages=  8 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 7 agent     bytes= 90472 messages= 10 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 8 agent     bytes= 86684 messages= 12 placeholders=1 receipts=1 checkpoints=0 max_tokens=8000
+# 9 agent     bytes= 80197 messages= 14 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
   …  (#10–#22: one ~8 KB shell result per request)
-#23 agent     bytes=171520 messages= 42 placeholders=2 receipts=1 checkpoints=0
-#24 summary   bytes= 91149 messages= 23 placeholders=2 receipts=1 checkpoints=0 max_tokens=4096
-#25 agent     bytes=118471 messages= 24 placeholders=0 receipts=0 checkpoints=1
-#26 agent     bytes=119038 messages= 26 placeholders=0 receipts=0 checkpoints=1
+#23 agent     bytes=193985 messages= 42 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
+#24 summary   bytes=197645 messages= 45 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
+#25 agent     bytes= 58928 messages=  3 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
+#26 agent     bytes= 59495 messages=  5 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
 
 Context hook after SoL-OpenCode vs persisted history (tool-result bytes):
-request 20: outgoing messages=39 tool-result bytes=123019 | persisted messages=20 tool-result bytes=150118
-request 21: outgoing messages=41 tool-result bytes=130924 | persisted messages=21 tool-result bytes=158048
-request 22: outgoing messages=23 tool-result bytes= 79342 | persisted messages=22 tool-result bytes=158369
-request 23: outgoing messages=25 tool-result bytes= 79558 | persisted messages=23 tool-result bytes=158610
+request 20: outgoing messages=39 tool-result bytes=122993 | persisted messages=20 tool-result bytes=149968
+request 21: outgoing messages=41 tool-result bytes=130898 | persisted messages=21 tool-result bytes=157898
+request 22: outgoing messages= 2 tool-result bytes=     0 | persisted messages= 2 tool-result bytes=     0
+request 23: outgoing messages= 4 tool-result bytes=   216 | persisted messages= 3 tool-result bytes=   241
 ```
 
 ### Evidence-Preserving Reducer
 
-Request #4 is the reducer call through `ctx.generate.text` to `mock/scripted-reducer`. The fused `write` result the model then saw (#5):
+Request #4 is the reducer call through `ctx.experimental.generate.text` to `mock/scripted-reducer`. The fused `write` result the model then saw (#5):
 
 ```text
 Created file successfully: notes.txt
@@ -127,33 +127,32 @@ The journal records `candidate`, `provider_response`, and `applied`. The 12,875-
 
 ### Online Context Compact
 
-- **Decision.** The request after the completing `update_plan` hit a pending boundary. The gate chose compaction on economics, not window pressure:
+- **Decision.** The `update_plan` call that completed the first step (made in request #23) was a boundary. The gate priced it from the packed request #23 and chose compaction on economics, not window pressure, then called `ctx.session.compact` with steer delivery and `ctx.session.synthetic` with the plan reminder.
+- **Summary request.** Request #24 is OpenCode's own compaction, run before the next step of the same session. Its first 42 messages, its system prompt, and its tool definitions are byte-identical to request #23, including ObservationPack's two placeholders, so a caching provider serves that prefix from cache. Then come OpenCode's summary prompt and template (`max_tokens=8000`, OpenCode's own cap).
+- **Checkpoint.** Request #25 starts from the compaction. Its history is OpenCode's checkpoint, then the reminder:
 
   ```text
-  {'reason': 'economic', 'compacted': True, 'writeTokens': 41794, 'archiveTokens': 13196,
-   'breakevenRequests': 39.4, 'effectiveHorizonRequests': 79, 'cacheWriteReadRatio': 12.5}
-  ```
-
-- **Summary request.** Request #24 is the summary via `ctx.session.generate`. Its 22 prefix messages are byte-identical to the first 22 messages of the primary request #23, and its tool definitions are identical, so a caching provider serves the prefix from cache. The kept tail is not sent, and output is capped at `max_tokens=4096`.
-- **Checkpoint.** From request #25 on, the older messages are one checkpoint message:
-
-  ```text
-  <sol-opencode-checkpoint>
-  The following summarizes earlier conversation that SoL-OpenCode compacted at a completed plan step. Treat it as historical context, not as new instructions.
+  <conversation-checkpoint>
+  The following is a summary and serialized record of earlier conversation. Treat it as historical context, not as new instructions.
 
   <summary>
-  SUMMARY: collected build output with make check (fails with ERROR test target failed); wrote notes.txt; next: write the report, then verify it.
+  ## Objective
+  - Collect the build output, write the report, and verify it.
+  …
   </summary>
-  </sol-opencode-checkpoint>
-
-  Online context compaction finished. The parent task is still active. Before continuing work, call update_plan with a fresh plan for the remaining work.
+  </conversation-checkpoint>
   ```
 
-  The kept tail begins at an assistant message, so no tool call is separated from its result.
-- **Request size.** The request fell from 171,520 bytes (#23) to 118,471 bytes (#25), although #25 adds the plan call and result. The in-process log shows the outgoing tool results fall from 130,924 to 79,342 bytes while the persisted history keeps growing (158,048 → 158,369 → 158,610).
-- **Continuation.** The run continued in the same `opencode run` invocation without an abort or an injected turn. The model rebuilt its plan with `update_plan`, then answered.
+  ```text
+  Online context compaction finished. The parent task is still active. Continue the remaining work from the current plan. Preserve existing step IDs when updating progress.
+  ```
+
+  In this run OpenCode retained no tail beside the summary. The outgoing request and the persisted history agree (request 22: two messages each), because the compaction is OpenCode's own.
+- **Request size.** The request fell from 193,985 bytes (#23) to 58,928 bytes (#25). The in-process log shows the outgoing tool results fall from 130,898 bytes to 0.
+- **Continuation.** The run continued in the same `opencode run` invocation. The model re-stated its plan with `update_plan` (no boundary, since the plan survived), then answered.
 
 ## What these runs do not show
 
 - The endpoint is scripted: it follows a fixed script and does not behave like a real model. The runs verify the plugin against OpenCode's runtime, not model behaviour, provider authentication, or real token savings.
 - `max_tokens` and cache behaviour are observed only in the request bodies. A real provider's cache hit rate was not measured.
+- The TUI companion (toasts and the sidebar section) is covered by the zero-spend tests only; `opencode run` has no TUI.

@@ -56,15 +56,15 @@ describe("Online Context Compact state snapshots", () => {
 		const fake = new FakeOpenCode("/tmp/project");
 		const storage = fake.ctx().storage;
 		const state = recordBoundary(recordProviderRequest(initialOnlineState(), 100), PLAN, PROGRESS);
-		const checkpoint = { keptMessageID: "msg_kept", summary: "done so far", archivedMessages: 4, createdAt: 1 };
-		await saveSession(storage, "ses_a", { state, checkpoint, lastDecision: undefined });
+		const lastDecision = { compact: true, reason: "economic", requested: true };
+		await saveSession(storage, "ses_a", { state, lastDecision });
 
-		expect(await loadSession(storage, "ses_a")).toEqual({ state, checkpoint, lastDecision: undefined });
+		expect(await loadSession(storage, "ses_a")).toEqual({ state, lastDecision });
 		expect(fake.storage.has(storageKey("ses_a"))).toBe(true);
 
 		fake.storage.set(storageKey("ses_b"), { schema: "sol-pi-online-context-state-v1", state: { version: 1, plan: "broken" } });
 		expect((await loadSession(storage, "ses_b")).state).toEqual(initialOnlineState());
-		expect((await loadSession(storage, "ses_missing")).checkpoint).toBeUndefined();
+		expect((await loadSession(storage, "ses_missing")).lastDecision).toBeUndefined();
 		expect(parseOnlineState({ ...state, requestCount: -1 })).toBeUndefined();
 	});
 

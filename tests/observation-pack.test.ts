@@ -115,6 +115,7 @@ describe("observation pack", () => {
 		const { fake } = await setup();
 		expect([...fake.tools.keys()]).toEqual(["obs_recall"]);
 		expect(fake.sessionHooks.get("context")).toHaveLength(1);
+		expect(fake.sessionHooks.get("compaction")).toHaveLength(1);
 		expect(fake.sessionHooks.get("generate")).toBeUndefined();
 	});
 
@@ -257,7 +258,7 @@ describe("observation pack", () => {
 		expect(projected[2]).toMatch(new RegExp(`id: ${id}`, "u"));
 	});
 
-	it("fails recall closed, without a defect, when an object path is replaced by a symlink", async () => {
+	it("fails recall closed, without a tool error, when an object path is replaced by a symlink", async () => {
 		const { fake, dataHome } = await setup();
 		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
 		const id = observationId("shell", "call-1", body);

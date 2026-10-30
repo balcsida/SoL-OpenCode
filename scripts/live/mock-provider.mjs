@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // A scripted OpenAI-compatible Chat Completions endpoint for zero-spend live
-// verification of the SoL-OpenCode plugin inside a real OpenCode 2.0.18 process.
+// verification of the SoL-OpenCode plugin inside a real OpenCode 2.2.3 process.
 // Every request body the "provider" receives is logged, so the log shows
 // exactly what OpenCode sent after the plugin's hooks ran.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -27,7 +27,7 @@ const SCRIPTS = {
 		call("write", {
 			path: "report.txt",
 			content: "hello from the fused write\n",
-			then_run: { command: "cat report.txt && seq 1 4000" },
+			then_run: { command: "cat report.txt && seq 100001 104000" },
 		}),
 		call("shell", { command: "echo second-step" }),
 		call("shell", { command: "echo third-step" }),
@@ -78,7 +78,8 @@ function classify(body) {
 	const messages = body.messages ?? [];
 	const last = messages.at(-1);
 	const lastText = last ? messageText(last) : "";
-	if (lastText.includes("<sol-opencode-compaction nonce=")) return "summary";
+	// OpenCode's own compaction prompt (core/src/session/compaction.ts SUMMARY_TEMPLATE), requested by Online Context Compact.
+	if (lastText.includes("<template>") && lastText.includes("## Objective")) return "summary";
 	if (lastText.startsWith("You are a lossless test/build output reducer.")) return "reducer";
 	if (Array.isArray(body.tools) && body.tools.length > 0) return "agent";
 	return "auxiliary";
@@ -111,7 +112,7 @@ function summarize(body, kind) {
 		toolResultBytes: toolMessages.map((message) => Buffer.byteLength(messageText(message))),
 		placeholders: (serialized.match(/\[large tool result replaced/gu) ?? []).length,
 		receipts: (serialized.match(/sol_pi_evidence_receipt_v1/gu) ?? []).length,
-		checkpoints: (serialized.match(/<sol-opencode-checkpoint>/gu) ?? []).length,
+		checkpoints: (serialized.match(/<conversation-checkpoint>/gu) ?? []).length,
 		thenRunInSchema: serialized.includes('"then_run"'),
 		maxTokens: body.max_tokens ?? body.max_completion_tokens,
 	};
@@ -164,7 +165,10 @@ createServer((req, res) => {
 		writeFileSync(join(LOG_DIR, `request-${String(requestNumber).padStart(3, "0")}-${kind}.json`), JSON.stringify(body, null, 2));
 		appendFileSync(join(LOG_DIR, "requests.jsonl"), `${JSON.stringify(summarize(body, kind))}\n`);
 
-		if (kind === "summary") return respond(res, body, text("SUMMARY: collected build output with make check (fails with ERROR test target failed); wrote notes.txt; next: write the report, then verify it."));
+		if (kind === "summary") {
+			// The headings OpenCode requires before it accepts a summary.
+			return respond(res, body, text("## Objective\n- Collect the build output, write the report, and verify it.\n\n## Work State\n- Ran make check (fails with ERROR test target failed); wrote notes.txt.\n\n## Next Move\n- Write the report, then verify it."));
+		}
 		if (kind === "reducer") return respond(res, body, text(reducerReceipt(messageText(body.messages.at(-1)))));
 		if (kind === "auxiliary") return respond(res, body, text("Scripted session"));
 		const script = SCRIPTS[SCRIPT];

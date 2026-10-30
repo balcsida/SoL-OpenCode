@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type { SolContext } from "../context.ts";
+import type { GenerateApi } from "../context.ts";
 import type { ArchiveObject } from "./archive.ts";
 import type { ReducerConfig } from "./config.ts";
 import { reducerPrompt } from "./receipt.ts";
@@ -19,7 +19,7 @@ export interface ProviderResult {
 	readonly ok: boolean;
 	readonly outputText: string;
 	readonly provider: string;
-	/** `ctx.generate.text` reports neither a stop reason nor token usage. */
+	/** `ctx.experimental.generate.text` reports neither a stop reason nor token usage. */
 	readonly stopReason: "unknown";
 	readonly usage: NormalizedUsage | undefined;
 }
@@ -40,7 +40,7 @@ function isModelSelectionError(error: unknown): boolean {
 }
 
 /**
- * `ctx.generate.text` offers no cancellation (the plugin adapter drops request
+ * `ctx.experimental.generate.text` offers no cancellation (the plugin adapter drops request
  * options), so a timeout abandons the wait and the original result goes back
  * to the agent; the provider call itself runs to completion.
  */
@@ -59,7 +59,7 @@ export async function callReducer(
 	isError: boolean,
 	archive: ArchiveObject,
 	body: string,
-	generate: SolContext["generate"],
+	generate: GenerateApi,
 ): Promise<ProviderResult> {
 	let response: { text: string };
 	try {

@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 /**
  * OpenCode exposes no public API for its global directories, so these mirror
- * `packages/util/src/global-roots.ts` and `global.ts` at OpenCode v2.0.18:
+ * `packages/util/src/global-roots.ts` and `global.ts` at OpenCode v2.2.3 (unchanged since v2.0.18):
  * XDG roots with an `opencode` suffix, and `OPENCODE_CONFIG_DIR` overriding the
  * global config directory.
  */

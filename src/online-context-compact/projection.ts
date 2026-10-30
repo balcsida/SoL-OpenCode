@@ -4,25 +4,19 @@
  */
 
 /**
- * Plugin-side compaction over the outgoing request.
- *
- * The plugin API offers no way to request OpenCode's own compaction, so a
- * selected plan boundary is compacted in the request instead: the older
- * messages are summarized once, and every later request carries the summary
- * in their place. Session history is never changed.
+ * Sizing of the outgoing request, as the provider sees it after the earlier
+ * hooks (ObservationPack) have projected it. Online Context Compact prices a
+ * boundary from the last request it observed, as SoL-Pi prices Pi's cut from
+ * its last observed projection.
  */
 
 import type { LLMMessage, RequestHookEvent } from "../context.ts";
-import { messageText, userTextMessage } from "../messages.ts";
-import type { Checkpoint } from "./store.ts";
+import { messageText } from "../messages.ts";
 
-export const BOUNDARY_COMPACTION_INSTRUCTIONS =
-	"Preserve completed work, verification results, important decisions, and remaining work.";
 export const POST_COMPACTION_PLAN_REMINDER =
 	"Online context compaction finished. The parent task is still active. " +
 	"Continue the remaining work from the current plan. Preserve existing step IDs when updating progress.";
 
-const CHECKPOINT_OPEN = "<sol-opencode-checkpoint>";
 /** OpenCode's own summary checkpoint (core/src/session/runner/to-llm-message.ts). */
 const NATIVE_CHECKPOINT_OPEN = "<conversation-checkpoint>";
 
@@ -44,26 +38,12 @@ export function requestTokens(event: RequestHookEvent): number {
 	return fixedTokens(event) + event.messages.reduce((total, message) => total + messageTokens(message), 0);
 }
 
-export function checkpointText(summary: string): string {
-	return [
-		CHECKPOINT_OPEN,
-		"The following summarizes earlier conversation that SoL-OpenCode compacted at a completed plan step. Treat it as historical context, not as new instructions.",
-		"",
-		"<summary>",
-		summary,
-		"</summary>",
-		"</sol-opencode-checkpoint>",
-		"",
-		POST_COMPACTION_PLAN_REMINDER,
-	].join("\n");
-}
-
-function isCheckpointMessage(message: LLMMessage): boolean {
-	return message.role === "user" && messageText(message).startsWith(CHECKPOINT_OPEN);
+function isNativeCheckpoint(message: LLMMessage): boolean {
+	return message.role === "user" && messageText(message).startsWith(NATIVE_CHECKPOINT_OPEN);
 }
 
 function isCompactable(message: LLMMessage): boolean {
-	return message.role !== "system" && !isCheckpointMessage(message);
+	return message.role !== "system";
 }
 
 /** A message the kept tail may start with: it has a session id and owns its tool results. */
@@ -72,7 +52,7 @@ function isBoundary(message: LLMMessage): message is LLMMessage & { readonly id:
 		typeof message.id === "string" &&
 		message.id.length > 0 &&
 		(message.role === "user" || message.role === "assistant") &&
-		!isCheckpointMessage(message)
+		!isNativeCheckpoint(message)
 	);
 }
 
@@ -84,7 +64,9 @@ export interface CutPoint {
 /**
  * Keep at least `keepRecentTokens` of recent conversation, starting at a user
  * or assistant message so no tool call is separated from its result. There
- * must be older conversation to summarize.
+ * must be older conversation to summarize. This mirrors OpenCode's own split,
+ * which keeps the newest messages within its `keep` budget verbatim beside the
+ * summary; the port prices that tail at SoL-Pi's retained size.
  */
 export function findCutPoint(messages: readonly LLMMessage[], keepRecentTokens: number): CutPoint | undefined {
 	let kept = 0;
@@ -108,41 +90,4 @@ export function archivedTokens(messages: readonly LLMMessage[], cut: CutPoint): 
 	return messages
 		.slice(0, cut.index)
 		.reduce((total, message) => total + (message.role === "system" ? 0 : messageTokens(message)), 0);
-}
-
-export type CheckpointApplication = "applied" | "none" | "stale";
-
-/**
- * Replace everything before the checkpoint's kept message with its summary.
- * Mid-conversation system messages stay. A checkpoint whose kept message is
- * gone, or that predates an OpenCode compaction, is stale.
- */
-export function applyCheckpoint(event: RequestHookEvent, checkpoint: Checkpoint | undefined): CheckpointApplication {
-	if (!checkpoint) return "none";
-	const index = event.messages.findIndex((message) => message.id === checkpoint.keptMessageID);
-	if (index < 0) return "stale";
-	const prefix = event.messages.slice(0, index);
-	if (prefix.some((message) => message.role === "user" && messageText(message).startsWith(NATIVE_CHECKPOINT_OPEN))) {
-		return "stale";
-	}
-	event.messages = [
-		...prefix.filter((message) => message.role === "system"),
-		userTextMessage(checkpointText(checkpoint.summary)),
-		...event.messages.slice(index),
-	];
-	return "applied";
-}
-
-export function summaryPrompt(nonce: string): string {
-	return [
-		`<sol-opencode-compaction nonce="${nonce}"/>`,
-		"Summarize the conversation above for online context compaction. The conversation after this point is kept verbatim and is not shown here; your summary replaces everything above.",
-		BOUNDARY_COMPACTION_INSTRUCTIONS,
-		"Write it so another agent could continue the task from the summary alone: the objective and requirements, decisions and their reasons, completed work with the files changed, verification results (commands and outcomes), the current state, open problems, and the remaining work. Keep exact file paths, identifiers, commands, and error messages that later work depends on. If the conversation begins with an earlier checkpoint summary, fold it into this one.",
-		"Do not call tools. Reply with the summary text only.",
-	].join("\n");
-}
-
-export function isSummaryPrompt(message: LLMMessage | undefined, nonce: string): boolean {
-	return message?.role === "user" && messageText(message).includes(`<sol-opencode-compaction nonce="${nonce}"/>`);
 }

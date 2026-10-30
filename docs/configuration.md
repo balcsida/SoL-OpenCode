@@ -48,7 +48,7 @@ node scripts/check-sol-pi-config.mjs --config /absolute/path/to/sol-pi.json --re
 - **`actionFusion`:** adds an optional `then_run: { command, timeout? }` (timeout in milliseconds) to OpenCode's built-in `edit` and `write` tools. After a successful mutation, the command runs through OpenCode's `shell` tool.
 - **`observationPack`:** projects large repeated tool results as placeholders in outgoing requests, and registers `obs_recall`.
 - **`evidencePreservingReducer`:** reduces long diagnostic logs through the configured reducer route, and registers `evidence_recall`.
-- **`evidencePreservingReducerProvider` / `evidencePreservingReducerModel`:** the OpenCode `providerID` and model `id` passed to `ctx.generate.text`. OpenCode resolves the model and its credentials. Never put credentials in `sol-pi.json`.
+- **`evidencePreservingReducerProvider` / `evidencePreservingReducerModel`:** the OpenCode `providerID` and model `id` passed to `ctx.experimental.generate.text`. OpenCode resolves the model and its credentials. Never put credentials in `sol-pi.json`.
 - **`onlineContextCompact`:** registers `update_plan` and compacts at completed plan steps when the economic gate or window pressure selects it.
 - **`cacheWriteReadRatio`:** the single ratio Online Context Compact's economic gate uses. It is fixed for the loaded plugin, does not read model prices, and is not a cost report.
 

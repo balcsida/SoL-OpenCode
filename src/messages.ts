@@ -63,11 +63,6 @@ export function withContent(message: LLMMessage, content: readonly LLMContentPar
 	return { ...message, content } as unknown as LLMMessage;
 }
 
-/** A plain user text message that OpenCode rebuilds with `Message.make`. */
-export function userTextMessage(text: string): LLMMessage {
-	return { role: "user", content: [{ type: "text", text }] } as unknown as LLMMessage;
-}
-
 /** All text in a message, for token estimates and marker detection. */
 export function messageText(message: LLMMessage): string {
 	return message.content

@@ -4,15 +4,15 @@
  */
 
 /**
- * A zero-spend stand-in for the OpenCode v2.0.18 Promise plugin context. It
+ * A zero-spend stand-in for the OpenCode v2.2.3 Promise plugin context. It
  * implements only the members SoL-OpenCode calls and reproduces the host
  * behaviour the mechanisms depend on:
  *
  * - `execute.before` sees the raw input and may rewrite it; the executor then
  *   receives `event.input` (core/src/tool.ts:271).
- * - Built-in tools fail with a typed `Tool.Error`, which reaches
- *   `execute.after` with `status: "error"`; a plugin tool that rejects is a
- *   defect that skips `execute.after` (plugin/src/promise/adapter.ts:615).
+ * - A built-in tool that fails with a typed `Tool.Error`, or a plugin tool
+ *   that rejects, reaches `execute.after` with `status: "error"`
+ *   (plugin/src/promise/adapter.ts `toolError`, core/src/tool.ts `executeTool`).
  * - Request hooks run in registration order on one mutable event.
  */
 
@@ -58,7 +58,6 @@ export interface CallInfo {
 export type CallOutcome =
 	| { readonly status: "completed"; readonly result: ToolResult; readonly executedInput: unknown }
 	| { readonly status: "error"; readonly error: { readonly message: string }; readonly executedInput: unknown }
-	| { readonly status: "defect"; readonly error: unknown };
 
 export interface FakeModel {
 	readonly providerID: string;
@@ -102,6 +101,12 @@ export class FakeOpenCode {
 	sessionGenerate: (input: { sessionID: string; prompt: string }) => Promise<{ text: string }> = async () => {
 		throw new Error("session.generate is not configured in this test");
 	};
+	/** `ctx.session.compact` calls: OpenCode enqueues a compaction inbox item and returns it. */
+	readonly compactions: { sessionID: string; delivery?: string; id: string }[] = [];
+	/** Makes `session.compact` reject. */
+	compactError: Error | undefined;
+	/** `ctx.session.synthetic` calls, in order. */
+	readonly synthetics: { sessionID: string; text: string; delivery?: string }[] = [];
 	/**
 	 * OpenCode projects each tool call, with the raw provider input, into the
 	 * session before executing it (`Tool.Called`); `session.context` returns it.
@@ -196,9 +201,20 @@ export class FakeOpenCode {
 				},
 				context: (input: { sessionID: string }) => fake.sessionContext(input),
 				generate: (input: { sessionID: string; prompt: string }) => fake.sessionGenerate(input),
+				compact: async (input: { sessionID: string; delivery?: string }) => {
+					if (fake.compactError) throw fake.compactError;
+					const id = `inbox_compact_${fake.compactions.length + 1}`;
+					fake.compactions.push({ ...input, id });
+					return { id, sessionID: input.sessionID, type: "compaction", payload: {}, delivery: input.delivery ?? "steer", time: { created: Date.now() } };
+				},
+				synthetic: async (input: { sessionID: string; text: string; delivery?: string }) => {
+					fake.synthetics.push({ ...input });
+				},
 			},
-			generate: {
-				text: (input: { prompt: string; model?: { providerID: string; id: string } }) => fake.generateText(input),
+			experimental: {
+				generate: {
+					text: (input: { prompt: string; model?: { providerID: string; id: string } }) => fake.generateText(input),
+				},
 			},
 			model: {
 				list: async () => ({ location: { directory: fake.directory }, data: fake.models }),
@@ -280,8 +296,9 @@ export class FakeOpenCode {
 				progress: async () => {},
 			});
 		} catch (error) {
-			if (!tool.builtin || !(error instanceof FakeToolFailure)) return { status: "defect", error };
-			const after = { tool: before.tool, ...base, input: executedInput, status: "error" as const, error };
+			// A rejection becomes a Tool.Error carrying the message (adapter `toolError`).
+			const failure = error instanceof FakeToolFailure ? error : new FakeToolFailure({ message: error instanceof Error ? error.message : String(error) });
+			const after = { tool: before.tool, ...base, input: executedInput, status: "error" as const, error: failure };
 			for (const hook of this.toolHooks["execute.after"]) await hook(after);
 			return { status: "error", error: after.error, executedInput };
 		}

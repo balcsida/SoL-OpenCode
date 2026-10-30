@@ -138,7 +138,7 @@ describe("evidence-preserving reducer", () => {
 		expect(DIAGNOSTIC_COMMAND.test("rg test src")).toBe(false);
 	});
 
-	it("sends the log to the configured route through ctx.generate.text", async () => {
+	it("sends the log to the configured route through ctx.experimental.generate.text", async () => {
 		const { fake } = await setup({
 			config: { evidencePreservingReducerProvider: "test-provider", evidencePreservingReducerModel: "test-reducer" },
 		});
