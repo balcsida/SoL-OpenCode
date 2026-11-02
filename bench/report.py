@@ -93,8 +93,8 @@ def main(jobs):
 
     print("\n## By combination\n")
     print("Cost vs none: geometric mean over tasks of this combination's cost divided by plain OpenCode's on the same task.\n")
-    print("| Combination | Runs | Mean cost | Cost vs none | Mean requests | Mean minutes | Resolved | Cost per resolved |")
-    print("|---|--:|--:|--:|--:|--:|--:|--:|")
+    print("| Combination | Runs | Mean cost | Cost vs none | Mean requests | Mean cache read / write (K tok) | Mean minutes | Resolved | Cost per resolved |")
+    print("|---|--:|--:|--:|--:|--:|--:|--:|--:|")
     by_combo = defaultdict(list)
     for r in runs:
         by_combo[r["combo"]].append(r)
@@ -103,7 +103,8 @@ def main(jobs):
         resolved = sum(r["reward"] == 1.0 for r in rs)
         mean = lambda key: sum(r[key] for r in rs) / len(rs)
         per_resolved = f"${sum(r['usd'] for r in rs) / resolved:.3f}" if resolved else "n/a"
-        print(f"| {combo} | {len(rs)} | ${mean('usd'):.3f} | {pct(ratio)} | {mean('requests'):.0f} | {mean('minutes'):.1f} | {resolved}/{len(rs)} | {per_resolved} |")
+        cache = f"{mean('read') / 1000:,.0f} / {mean('write') / 1000:,.0f}"
+        print(f"| {combo} | {len(rs)} | ${mean('usd'):.3f} | {pct(ratio)} | {mean('requests'):.0f} | {cache} | {mean('minutes'):.1f} | {resolved}/{len(rs)} | {per_resolved} |")
 
     # The SoL-Pi paper's activation metrics (section 3.4): trigger rate is the share of runs in which a mechanism
     # acted at least once; intensity is its mean number of actions per triggered run.
