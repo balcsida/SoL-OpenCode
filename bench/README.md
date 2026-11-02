@@ -1,6 +1,6 @@
 # Benchmark sweep
 
-An indicative measurement of what SoL-OpenCode saves on long tasks: every on/off combination of the four mechanisms, run with real OpenCode 2.2.3 sessions on Terminal-Bench 2.0 and SWE-bench Verified tasks through [Harbor](https://github.com/harbor-framework/harbor). It spends real money and is not part of `npm run check`.
+An indicative measurement of what SoL-OpenCode saves on long tasks: every on/off combination of the four mechanisms, run with real OpenCode 2.2.3 sessions on Terminal-Bench 2.0 and SWE-bench Verified tasks through [Harbor](https://github.com/harbor-framework/harbor). It spends real money and is not part of `npm run check`. The results of 2026-11-02 are in [docs/benchmark.md](../docs/benchmark.md).
 
 ## What runs
 
