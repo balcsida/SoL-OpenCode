@@ -69,7 +69,7 @@ def geomean(values):
 
 
 def pct(ratio):
-    return "n/a" if math.isnan(ratio) else f"{(ratio - 1) * 100:+.0f}%"
+    return "n/a" if math.isnan(ratio) else f"{round((ratio - 1) * 100):+d}%"  # round first: no "-0%"
 
 
 def main(jobs):
