@@ -34,6 +34,21 @@ bench/report.py tb-pilot tb-grid > bench/jobs/report.md
 - **Mechanism activity:** the paper's trigger rate (share of runs in which an enabled mechanism acted) and intensity (actions per triggered run). A mechanism that never acts cannot save anything: Action Fusion needs the model to pass `then_run`, and Online Context Compact needs it to call `update_plan`.
 - **Average effect of each mechanism** (full grid only): per task, the 8 combinations with the mechanism on against the 8 with it off.
 
+## Pi sweep
+
+The same tasks, proxy and grading, but with Pi 1.3.0 and SoL-Pi source trees instead of OpenCode and this plugin, to compare SoL-Pi versions on Claude models (`bench/sol_pi_agent.py`). An arm is `none` (plain Pi) or `<tree>:<mechanisms>`; a tree is a label that `bench/stage_pi.sh` exported from a SoL-Pi checkout. Pi runs with `--mode json`, thinking `medium`, cache warming off (it would add requests of its own while a slow tool runs), and project-local Pi files ignored.
+
+```bash
+bench/stage_pi.sh ~/github.com/SoL-Pi main=upstream/main pr=perf/claude-prompt-cache   # Node 22, Pi 1.3.0, ripgrep, uv, the SoL-Pi trees
+PROXY_LOG=bench/jobs/proxy-pi.jsonl NODE_USE_ENV_PROXY=1 node bench/proxy.mjs &         # its own log and budget
+bench/sweep_pi.py --job pi-smoke --dataset terminal-bench@2.0 --tasks circuit-fibsqrt --model anthropic/claude-haiku-5-5 --thinking off --arms 'none;pr:af+op+epr+occ'
+bench/sweep_pi.py --job pi-tb --dataset terminal-bench@2.0 --concurrency 8              # none, main:op, pr:op, main and pr with all four
+bench/sweep_pi.py --job pi-swe --concurrency 8
+PYTHONPATH=bench bench/report_pi.py pi-tb pi-swe > bench/jobs/report-pi.md
+```
+
+`report_pi.py` reads mechanism evidence from Pi's event stream (`agent/pi.jsonl`) and adds a table of cache-write tokens on the requests where ObservationPack first replaced a result, against the other requests of the same runs.
+
 ## Notes
 
 - **Network.** The proxy also acts as the containers' forward proxy, for HTTPS (`CONNECT`) and plain HTTP (apt), chained through the host's own proxy when `HTTPS_PROXY`/`HTTP_PROXY` are set. `sweep.py` pulls task images on the host with `crane`. Both make the sweep work where Docker cannot reach the internet directly. `NODE_USE_ENV_PROXY=1` makes the proxy's own requests follow the host's proxy settings.

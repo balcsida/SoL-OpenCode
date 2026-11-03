@@ -61,7 +61,8 @@ export function describe(body) {
 	const serialized = JSON.stringify(body);
 	let kind = "auxiliary";
 	if (last.includes("<template>") && last.includes("## Objective")) kind = "summary";
-	else if (last.slice(0, 400).includes("You are a lossless test/build output reducer.")) kind = "reducer";
+	// SoL-OpenCode sends the reducer instructions as the last message, SoL-Pi as the system prompt.
+	else if (`${text(body.system).slice(0, 400)}\n${last.slice(0, 400)}`.includes("You are a lossless test/build output reducer.")) kind = "reducer";
 	else if (Array.isArray(body.tools) && body.tools.length > 0) kind = "agent";
 	const tools = Array.isArray(body.tools) ? body.tools.map((tool) => tool.name) : [];
 	return {

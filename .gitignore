@@ -16,4 +16,5 @@ upstream/
 # SWE-bench sweep output (Harbor jobs, proxy log)
 bench/jobs/
 bench/stage/
+bench/stage-pi/
 __pycache__/
