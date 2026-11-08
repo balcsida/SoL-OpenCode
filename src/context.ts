@@ -5,7 +5,7 @@
 
 /**
  * The slice of the OpenCode v2 Promise plugin context this plugin uses, and the
- * hook event shapes it reads. Types come from `@opencode/plugin@2.2.3`
+ * hook event shapes it reads. Types come from `@opencode/plugin@2.2.6`
  * (`dist/promise/*.d.ts`); tests drive the mechanisms through a fake that
  * implements only these members.
  */

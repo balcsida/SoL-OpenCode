@@ -1,11 +1,11 @@
 # OpenCode Compatibility
 
-SoL-OpenCode is developed and tested against OpenCode **2.2.3** (`@opencode/cli` 2.2.3) and pins `@opencode/plugin` to exactly **2.2.3**. The v2 plugin API is young: the package went from its first release on 2026-09-02 to 2.2.3 on 2026-10-30. The port moved from 2.0.18 to 2.2.3 without a change to the hooks it uses; the differences that mattered are noted below. Treat any other OpenCode version as a compatibility change and re-run both of these before using it:
+SoL-OpenCode is developed and tested against OpenCode **2.2.6** (`@opencode/cli` 2.2.6) and pins `@opencode/plugin` to exactly **2.2.6**. The v2 plugin API is young: the package went from its first release on 2026-09-02 to 2.2.6 in November 2026. The port moved from 2.0.18 to 2.2.3, then to 2.2.6, without a change to the hooks it uses; the differences that mattered are noted below. From 2.2.3 to 2.2.6 the plugin API only gained `ctx.experimental.artifact`, which is not used. Treat any other OpenCode version as a compatibility change and re-run both of these before using it:
 
 - `npm run check`: type checking and 167 zero-spend tests;
 - `scripts/live/verify.sh`: real sessions against a scripted local endpoint.
 
-Source references below point at `anomalyco/opencode` tag `v2.2.3` (`packages/…`) and at `@opencode/plugin@2.2.3` `dist/`.
+Source references below point at `anomalyco/opencode` tag `v2.2.6` (`packages/…`) and at `@opencode/plugin@2.2.6` `dist/`.
 
 The mechanisms follow [NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) at commit `2195680` (2026-10-18). SoL-Pi changes that concern only Pi's runtime are not ported: temporary archives for `--no-session` and in-memory sessions (every OpenCode session has an archive root under OpenCode's data directory), the recovery from native compaction refusals and the deferred-host continuation (OpenCode's run continues on its own after a compaction), and the Pi 1.x and codemode compatibility work (Pi's shell settings, in-place context edits, its compaction settings lookup, and nested codemode call ids). Where that work fixed a mechanism rather than Pi plumbing, the port already takes the status from OpenCode's metadata instead of from text, so nothing was left to fix.
 
@@ -31,25 +31,25 @@ SoL-OpenCode is a Promise plugin: `Plugin.define({ id: "sol-opencode", setup })`
 | `ctx.storage` | Online Context Compact | per-session state |
 | `ctx.event.subscribe` | Action Fusion, Online Context Compact | `session.step.ended`, `session.execution.*`, `session.idle`, `session.compaction.ended`, `session.compaction.failed`, `session.revert.committed`, `session.deleted` |
 
-**Experimental status:** `ctx.experimental.generate.text` sits under the experimental namespace. It replaced `ctx.experimental.generate.text`, which 2.2 deprecates and removes in the next minor. Nothing else used here is marked experimental; the `experimental.ws.*` hooks, `experimental.idle`, and `ctx.experimental.terminal` are not used.
+**Experimental status:** `ctx.experimental.generate.text` sits under the experimental namespace. It replaced `ctx.generate.text`, which 2.2 deprecates and removes in the next minor. Nothing else used here is marked experimental; the `experimental.ws.*` hooks, `experimental.idle`, and `ctx.experimental.terminal` are not used.
 
 SoL-OpenCode does not patch OpenCode, does not reach its HTTP API, and makes every model call through OpenCode: `ctx.experimental.generate.text` for the reducer, and OpenCode's own compaction for the summary.
 
 ### Host behaviour the plugin relies on
 
-These points are not part of the documented plugin contract. The port mirrors them from the v2.2.3 source, and the fake plugin context in `tests/` reproduces them:
+These points are not part of the documented plugin contract. The port mirrors them from the v2.2.6 source, and the fake plugin context in `tests/` reproduces them:
 
 - **Global directories.** OpenCode's global directories follow XDG with an `opencode` suffix, and `OPENCODE_CONFIG_DIR` overrides the config directory (`util/src/global-roots.ts`, `util/src/global.ts`). There is no plugin API for them.
-- **Tool paths.** The built-in `edit` and `write` resolve paths with `FileAccess.resolvePath` (`core/src/file-access.ts:73`): Windows drive conversion, `~` expansion, and resolution against the Location directory.
-- **Shell output.** The built-in `shell` keeps the last 2,000 lines / 50 KiB and saves the full output to `<data>/shell/<projectID>/sh_*.out`, announced by a `full output saved to …` notice (`core/src/shell.ts:236-249`). The file is deleted once more than 25 exited shells are retained.
-- **Input repair.** `opencode.tool.input.repair` runs its `execute.before` hook before any user plugin and drops keys that a closed input schema does not declare (`core/src/plugin/tool-input-repair.ts`).
-- **Recorded calls.** A tool call is recorded durably with its raw input (`Tool.Called`) before execution starts (`core/src/session/runner/step.ts:101`).
-- **Message rebuilding.** After the request hooks run, OpenCode rebuilds every message with `Message.make({ ...message, content })` (`core/src/session/model-request.ts:112`). Replacement messages may therefore be plain objects.
+- **Tool paths.** The built-in `edit` and `write` resolve paths with `FileAccess.resolvePath` (`core/src/file-access.ts:68`): Windows drive conversion, `~` expansion, and resolution against the Location directory.
+- **Shell output.** The built-in `shell` keeps the last 2,000 lines / 50 KiB and saves the full output to `<data>/shell/<projectID>/sh_*.out`, announced by a `full output saved to …` notice (`core/src/shell.ts:245-259`). The file is deleted once more than 25 exited shells are retained.
+- **Input repair.** `opencode.tool.input.repair` runs its `execute.before` hook before any user plugin and drops keys that a closed input schema does not declare (`core/src/plugin/tool-input-repair.ts`). Since 2.2.6 it also runs a call to the unknown tool `bash` as `shell` and appends a note to its result in `execute.after`.
+- **Recorded calls.** A tool call is recorded durably with its raw input (`Tool.Called`) before execution starts (`core/src/session/runner/step.ts:108`).
+- **Message rebuilding.** After the request hooks run, OpenCode builds the request with `ai.request` (`core/src/session/model-request.ts`), which passes every message through `Message.make` (`ai/src/llm.ts`, `ai/src/schema/messages.ts`). Replacement messages may therefore be plain objects.
 - **Tool errors.** Since 2.0.28 a rejected Promise tool executor becomes a `Tool.Error` carrying its message (`plugin/src/promise/adapter.ts`, `toolError`), and `execute.after` runs for it with `status: "error"` (`core/src/tool.ts`, `executeTool`). Only an executor that rejects with a `Tool.Error` itself keeps its metadata.
 
 ## Plugin tools
 
-In v2 a plugin tool without `options.codemode: false` lives only in the Code Mode catalog, reachable through the `execute` tool (`core/src/tool.ts:234`). SoL-Pi's tools were direct model tools, so `obs_recall`, `evidence_recall`, and `update_plan` set `codemode: false`, like OpenCode's own built-ins.
+In v2 a plugin tool without `options.codemode: false` lives only in the Code Mode catalog, reachable through the `execute` tool (`core/src/tool.ts:263`). SoL-Pi's tools were direct model tools, so `obs_recall`, `evidence_recall`, and `update_plan` set `codemode: false`, like OpenCode's own built-ins.
 
 Their input is JSON Schema, which OpenCode validates before the executor runs. Expected failures come back as ordinary content with `metadata.error`, so the recorded call stays readable:
 
@@ -63,7 +63,7 @@ In SoL-Pi these threw.
 
 The built-in `edit` and `write` tools are not replaced; wrapping their executors from a Promise plugin would turn their typed failures into defects. Action Fusion works in four steps:
 
-1. **Advertise.** The `context`, `generate`, and `compaction` hooks add an optional `then_run` object to the live `edit`/`write` JSON schemas. OpenCode matches a replaced definition back by key (`core/src/session/model-request.ts:228`). Every provider protocol sends tool schemas with `strict: false`.
+1. **Advertise.** The `context`, `generate`, and `compaction` hooks add an optional `then_run` object to the live `edit`/`write` JSON schemas. OpenCode matches a replaced definition back by key (`core/src/session/model-request.ts:302`). Every provider protocol sends tool schemas with `strict: false`.
 2. **Take the queue.** `execute.before` removes `then_run` from the input if it is still there. The input-repair hook usually dropped it already; in that case the plugin reads `then_run` from the recorded call via `ctx.session.context()`. It then takes SoL's per-file queue before the built-in mutation runs.
 3. **Run the command.** `execute.after` checks that the file is unchanged and runs the command through OpenCode's own `shell` tool, so OpenCode's shell selection, permissions, `ctx.shell.hook("create.before")`, and output limits all apply. It appends the result and records `metadata.thenRun: { status, command, exit, truncated }`.
 4. **Release.** The queue slot is released after the command. If `execute.after` never runs, the slot is released and the running command aborted on `session.execution.interrupted`, `session.idle`, or `session.deleted`.
@@ -135,7 +135,7 @@ Consequences, compared with SoL-Pi:
 
 ### Context usage
 
-SoL-Pi read `ExtensionContext.getContextUsage()`. The port takes the provider-counted size of the latest completed step from `session.step.ended` (`input + cache.read + cache.write + output + reasoning`), the same anchor OpenCode's own compaction threshold uses (`core/src/session/compaction.ts:174`).
+SoL-Pi read `ExtensionContext.getContextUsage()`. The port takes the provider-counted size of the latest completed step from `session.step.ended` (`input + cache.read + cache.write + output + reasoning`), the same anchor OpenCode's own compaction threshold uses (`core/src/session/compaction.ts:1150`).
 
 It compares that with an estimate of the current request: bytes ÷ 4 of the messages, the system text, and the tool definitions. It uses the larger of the two, as SoL-Pi did. After any compaction the provider-counted value is cleared until the next step, as Pi reported no size between a compaction and the next answered request. The context window comes from `ctx.model.list()`.
 
@@ -150,7 +150,7 @@ See [configuration.md](configuration.md).
 
 `tests/fake-opencode.ts` implements only the plugin-context members SoL-OpenCode uses. It reproduces the host behaviour listed above: hook order on one mutable event, input repair for closed schemas, the recorded call, Code Mode-only plugin tools, typed errors for failed built-ins and rejected plugin tools, `session.compact` and `session.synthetic` as recorded inbox items, and message shapes. Every test is zero-spend.
 
-`scripts/live/verify.sh` runs real `opencode run --standalone` sessions in a scratch project. It loads this checkout from `.opencode/plugins/` and points it at a scripted OpenAI-compatible endpoint on localhost. It logs every request the endpoint receives, and a diagnostic plugin compares each outgoing request with the persisted history. See [verification.md](verification.md) for the 2.2.3 results.
+`scripts/live/verify.sh` runs real `opencode run --standalone` sessions in a scratch project. It loads this checkout from `.opencode/plugins/` and points it at a scripted OpenAI-compatible endpoint on localhost. It logs every request the endpoint receives, and a diagnostic plugin compares each outgoing request with the persisted history. See [verification.md](verification.md) for the 2.2.6 results.
 
 The live checks verify runtime compatibility, not provider behaviour or token savings on real tasks.
 

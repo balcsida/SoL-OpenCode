@@ -1,6 +1,6 @@
-# Live verification on OpenCode 2.2.3
+# Live verification on OpenCode 2.2.6
 
-These results come from `scripts/live/verify.sh`, run on 2026-10-30 against `opencode v2.2.3` (`@opencode/cli` 2.2.3, macOS arm64, Node 22). They replace the 2.0.18 results of 2026-09-28: the harness is unchanged apart from a longer scripted command in step 2 and the summary reply, which now fills OpenCode's own template.
+These results come from `scripts/live/verify.sh`, run on 2026-11-08 against `opencode v2.2.6` (`@opencode/cli` 2.2.6, macOS arm64, Node 26). They replace the 2.2.3 results of 2026-10-30 with the same harness. Every mechanism behaves as on 2.2.3; the request bodies OpenCode builds are about 500 bytes larger, and the failing command's output is 12 bytes shorter.
 
 Each run is one real `opencode run --standalone --auto` session in a scratch project that loads this checkout from `.opencode/plugins/`. The model is a scripted OpenAI-compatible endpoint on `127.0.0.1`, so the runs are zero-spend and deterministic. Everything else is the real OpenCode:
 
@@ -39,26 +39,26 @@ Request kinds in the endpoint log:
 
 ```text
 What the provider endpoint received:
-# 1 auxiliary bytes=  2139 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 2 agent     bytes= 56290 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
-# 3 agent     bytes= 72802 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
-# 4 agent     bytes= 73030 messages=  6 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
-# 5 agent     bytes= 58636 messages=  8 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
-# 6 agent     bytes= 62252 messages= 10 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
+# 1 auxiliary bytes=  2135 messages=  2 placeholders=0 receipts=0 checkpoints=0
+# 2 agent     bytes= 56822 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 3 agent     bytes= 73319 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 4 agent     bytes= 73547 messages=  6 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 5 agent     bytes= 59169 messages=  8 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
+# 6 agent     bytes= 62785 messages= 10 placeholders=1 receipts=0 checkpoints=0 max_tokens=8000
 
 Context hook after SoL-OpenCode vs persisted history (tool-result bytes):
 request  1: outgoing messages= 1 tool-result bytes=     0 | persisted messages= 1 tool-result bytes=     0
-request  2: outgoing messages= 3 tool-result bytes= 16268 | persisted messages= 2 tool-result bytes= 16268
-request  3: outgoing messages= 5 tool-result bytes= 16283 | persisted messages= 3 tool-result bytes= 16308
-request  4: outgoing messages= 7 tool-result bytes=  1629 | persisted messages= 4 tool-result bytes= 16347
-request  5: outgoing messages= 9 tool-result bytes=  5007 | persisted messages= 5 tool-result bytes= 19750
+request  2: outgoing messages= 3 tool-result bytes= 16253 | persisted messages= 2 tool-result bytes= 16253
+request  3: outgoing messages= 5 tool-result bytes= 16268 | persisted messages= 3 tool-result bytes= 16293
+request  4: outgoing messages= 7 tool-result bytes=  1630 | persisted messages= 4 tool-result bytes= 16332
+request  5: outgoing messages= 9 tool-result bytes=  5008 | persisted messages= 5 tool-result bytes= 19735
 ```
 
 - **Action Fusion.** The `write` ran the command in the same call. Its result is the write confirmation, then `[then_run:succeeded]`, then the command output, which OpenCode's shell truncated to its last 2,000 lines.
-- **Packing.** The fused result went to the provider in full on the next two requests (#3, #4). From #5 on it was a placeholder, and the request shrank from 73,030 to 58,636 bytes.
-- **History.** The persisted tool results never shrank: 16,347 bytes while the outgoing request carried 1,629.
+- **Packing.** The fused result went to the provider in full on the next two requests (#3, #4). From #5 on it was a placeholder, and the request shrank from 73,547 to 59,169 bytes.
+- **History.** The persisted tool results never shrank: 16,332 bytes while the outgoing request carried 1,630.
 - **Archive.** The original bytes are archived at `<data>/opencode/sol-opencode/<session>/observation-pack/objects/obs_….txt`. The ledger records `full`, `full`, `placeholder`.
-- **Recall.** `obs_recall` is a direct tool, and it returned the first exact page (request 5 carries it: 5,007 bytes of tool results).
+- **Recall.** `obs_recall` is a direct tool, and it returned the first exact page (request 5 carries it: 5,008 bytes of tool results).
 
 On 2.2.3 the shell's truncation notice is a few bytes shorter than on 2.0.18, which put the earlier script's `seq 1 4000` output just under ObservationPack's 10 KiB threshold; the scripted command now prints longer lines.
 
@@ -77,24 +77,24 @@ On 2.2.3 the shell's truncation notice is a few bytes shorter than on 2.0.18, wh
 
 ```text
 What the provider endpoint received:
-# 1 auxiliary bytes=  2167 messages=  2 placeholders=0 receipts=0 checkpoints=0
-# 2 agent     bytes= 58361 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
-# 3 agent     bytes= 59082 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 1 auxiliary bytes=  2163 messages=  2 placeholders=0 receipts=0 checkpoints=0
+# 2 agent     bytes= 58895 messages=  2 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
+# 3 agent     bytes= 59616 messages=  4 placeholders=0 receipts=0 checkpoints=0 max_tokens=8000
 # 4 reducer   bytes= 14614 messages=  1 placeholders=0 receipts=0 checkpoints=0
-# 5 agent     bytes= 60420 messages=  6 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
-# 6 agent     bytes= 74068 messages=  8 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
-# 7 agent     bytes= 90472 messages= 10 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
-# 8 agent     bytes= 86684 messages= 12 placeholders=1 receipts=1 checkpoints=0 max_tokens=8000
-# 9 agent     bytes= 80197 messages= 14 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
+# 5 agent     bytes= 60940 messages=  6 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 6 agent     bytes= 74588 messages=  8 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 7 agent     bytes= 90978 messages= 10 placeholders=0 receipts=1 checkpoints=0 max_tokens=8000
+# 8 agent     bytes= 87190 messages= 12 placeholders=1 receipts=1 checkpoints=0 max_tokens=8000
+# 9 agent     bytes= 80719 messages= 14 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
   …  (#10–#22: one ~8 KB shell result per request)
-#23 agent     bytes=193985 messages= 42 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
-#24 summary   bytes=197645 messages= 45 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
-#25 agent     bytes= 58928 messages=  3 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
-#26 agent     bytes= 59495 messages=  5 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
+#23 agent     bytes=194507 messages= 42 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
+#24 summary   bytes=198167 messages= 45 placeholders=2 receipts=1 checkpoints=0 max_tokens=8000
+#25 agent     bytes= 59466 messages=  3 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
+#26 agent     bytes= 60033 messages=  5 placeholders=0 receipts=0 checkpoints=1 max_tokens=8000
 
 Context hook after SoL-OpenCode vs persisted history (tool-result bytes):
-request 20: outgoing messages=39 tool-result bytes=122993 | persisted messages=20 tool-result bytes=149968
-request 21: outgoing messages=41 tool-result bytes=130898 | persisted messages=21 tool-result bytes=157898
+request 20: outgoing messages=39 tool-result bytes=122981 | persisted messages=20 tool-result bytes=149940
+request 21: outgoing messages=41 tool-result bytes=130886 | persisted messages=21 tool-result bytes=157870
 request 22: outgoing messages= 2 tool-result bytes=     0 | persisted messages= 2 tool-result bytes=     0
 request 23: outgoing messages= 4 tool-result bytes=   216 | persisted messages= 3 tool-result bytes=   241
 ```
@@ -110,20 +110,20 @@ sol_pi_evidence_receipt_v1
 status=failure
 uncertain=false
 command_sha256=4a5b5cf7…
-source_sha256=ef43e423…
-source_bytes=12875
+source_sha256=708e898f…
+source_bytes=12863
 source_lines=305
-source_artifact=<data>/opencode/sol-opencode/<session>/evidence-preserving-reducer/objects/ef/ef43e423….txt
+source_artifact=<data>/opencode/sol-opencode/<session>/evidence-preserving-reducer/objects/70/708e898f….txt
 reducer_provider=mock
 reducer_model=scripted-reducer
 reducer_total_tokens=unavailable
 verified_evidence:
 - kind=failure line=301 quote_sha256=682fe123… quote="ERROR test target failed"
 authority=Sol retains diagnosis, repair, rerun, and pass/fail adjudication
-readback=call evidence_recall with {"source_sha256":"ef43e423…","offset":0} when exact context is needed; continue with returned next_offset
+readback=call evidence_recall with {"source_sha256":"708e898f…","offset":0} when exact context is needed; continue with returned next_offset
 ```
 
-The journal records `candidate`, `provider_response`, and `applied`. The 12,875-byte original is archived. `evidence_recall` returned it exactly: `next_offset=12875 eof=true`. ObservationPack left the receipt alone, and it packed the large `evidence_recall` output after two sends (#9 has two placeholders).
+The journal records `candidate`, `provider_response`, and `applied`. The 12,863-byte original is archived. `evidence_recall` returned it exactly: `next_offset=12863 eof=true`. ObservationPack left the receipt alone, and it packed the large `evidence_recall` output after two sends (#9 has two placeholders).
 
 ### Online Context Compact
 
@@ -148,7 +148,7 @@ The journal records `candidate`, `provider_response`, and `applied`. The 12,875-
   ```
 
   In this run OpenCode retained no tail beside the summary. The outgoing request and the persisted history agree (request 22: two messages each), because the compaction is OpenCode's own.
-- **Request size.** The request fell from 193,985 bytes (#23) to 58,928 bytes (#25). The in-process log shows the outgoing tool results fall from 130,898 bytes to 0.
+- **Request size.** The request fell from 194,507 bytes (#23) to 59,466 bytes (#25). The in-process log shows the outgoing tool results fall from 130,886 bytes to 0.
 - **Continuation.** The run continued in the same `opencode run` invocation. The model re-stated its plan with `update_plan` (no boundary, since the plan survived), then answered.
 
 ## What these runs do not show
