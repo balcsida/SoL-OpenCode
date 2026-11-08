@@ -13,3 +13,8 @@ dist/
 docs/superpowers/plans/
 # Read-only reference clone of NVlabs/SoL-Pi used by the OpenCode port
 upstream/
+# SWE-bench sweep output (Harbor jobs, proxy log)
+bench/jobs/
+bench/stage/
+bench/stage-pi/
+__pycache__/
