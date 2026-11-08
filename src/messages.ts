@@ -10,9 +10,10 @@
  * one `tool-result` part whose `result` is `{ type: "text", value }` for a
  * single text item or `{ type: "content", value: Content[] }` otherwise; a
  * failed call is `{ type: "error" }` (core/src/session/runner/to-llm-message.ts).
- * After the hooks run, OpenCode rebuilds every message with
- * `Message.make({ ...message, content })` (core/src/session/model-request.ts),
- * so replacements may be plain objects with the same fields.
+ * After the hooks run, OpenCode builds the request with `ai.request`
+ * (core/src/session/model-request.ts), which passes every message through
+ * `Message.make` (ai/src/llm.ts), so replacements may be plain objects with
+ * the same fields.
  */
 
 import type { LLMContentPart, LLMMessage, ToolResultPart } from "./context.ts";

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // A scripted OpenAI-compatible Chat Completions endpoint for zero-spend live
-// verification of the SoL-OpenCode plugin inside a real OpenCode 2.2.3 process.
+// verification of the SoL-OpenCode plugin inside a real OpenCode 2.2.6 process.
 // Every request body the "provider" receives is logged, so the log shows
 // exactly what OpenCode sent after the plugin's hooks ran.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";

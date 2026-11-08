@@ -39,7 +39,7 @@
 		"context-management"
 	],
 	"dependencies": {
-		"@opencode/plugin": "2.2.3"
+		"@opencode/plugin": "2.2.6"
 	},
 	"devDependencies": {
 		"@types/node": "24.12.4",

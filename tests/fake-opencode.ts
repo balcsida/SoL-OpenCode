@@ -4,7 +4,7 @@
  */
 
 /**
- * A zero-spend stand-in for the OpenCode v2.2.3 Promise plugin context. It
+ * A zero-spend stand-in for the OpenCode v2.2.6 Promise plugin context. It
  * implements only the members SoL-OpenCode calls and reproduces the host
  * behaviour the mechanisms depend on:
  *
