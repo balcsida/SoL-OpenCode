@@ -110,6 +110,52 @@ describe("SoL-OpenCode plugin entry", () => {
 		opencode.options = { version: 1, actionFusion: "yes" };
 		await expect(plugin.setup(opencode.ctx() as never)).rejects.toThrow("SoL-Pi config actionFusion must be boolean");
 	});
+
+	it("undoes what already registered when a later mechanism fails to register", async () => {
+		const opencode = await fake();
+		const ctx = opencode.ctx();
+		const broken = {
+			...ctx,
+			tool: {
+				...ctx.tool,
+				transform: async () => {
+					throw new Error("registry unavailable");
+				},
+			},
+		};
+		await expect(
+			registerConfiguredFeatures(broken, { ...DEFAULT_CONFIG, actionFusion: true, observationPack: true }),
+		).rejects.toThrow("registry unavailable");
+		// Action Fusion's event subscription and the TUI channel did not outlive the failure.
+		expect(opencode.subscriptions.size).toBe(0);
+		expect(opencode.rpcRegistrations.map((registration) => registration.disposed)).toEqual([true]);
+	});
+
+	it("runs every cleanup even when one of them fails", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const opencode = await fake();
+		const ctx = opencode.ctx();
+		const dispose = await registerConfiguredFeatures(
+			{
+				...ctx,
+				rpc: {
+					register: async () => ({
+						events: { emit: async () => {} },
+						dispose: async () => {
+							throw new Error("channel already closed");
+						},
+					}),
+				},
+			} as never,
+			{ ...DEFAULT_CONFIG, actionFusion: true },
+		);
+		expect(opencode.subscriptions.size).toBe(1);
+		await expect(dispose()).resolves.toBeUndefined();
+		expect(opencode.subscriptions.size).toBe(0);
+		expect(logged).toHaveBeenCalledWith("[sol-opencode] cleanup failed: channel already closed");
+		logged.mockRestore();
+	});
+
 	describe("TUI channel", () => {
 		const call = { sessionID: "ses_rpc", id: "w-1", messageID: "msg_1", agent: "build" };
 		const fusedWrite = { path: "a.txt", content: "a\n", then_run: { command: "check" } };

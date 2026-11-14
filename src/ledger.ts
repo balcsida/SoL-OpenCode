@@ -3,7 +3,8 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
-import { appendFile, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /**
@@ -13,9 +14,17 @@ import { dirname } from "node:path";
  */
 export type Ledger = (entry: Record<string, unknown>) => Promise<void>;
 
+/** Owner-only, and never through a planted symlink: entries name tools, sizes, and content hashes. */
+const APPEND_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+
 export function createLedger(path: string): Ledger {
 	return async (entry) => {
-		await mkdir(dirname(path), { recursive: true });
-		await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`, "utf8");
+		await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+		const handle = await open(path, APPEND_FLAGS, 0o600);
+		try {
+			await handle.appendFile(`${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`, "utf8");
+		} finally {
+			await handle.close();
+		}
 	};
 }

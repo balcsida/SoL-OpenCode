@@ -101,6 +101,12 @@ describe("SoL-Pi config", () => {
 		);
 	});
 
+	it("reads a config file that starts with a byte-order mark", () => {
+		const sources = fixture();
+		writeProjectConfig(sources.projectDirectory, `\uFEFF${JSON.stringify({ version: 1, observationPack: true })}`);
+		expect(loadSolPiConfig(sources).config.observationPack).toBe(true);
+	});
+
 	it("rejects unknown keys", () => {
 		const sources = fixture();
 		writeProjectConfig(sources.projectDirectory, { version: 1, actionFussion: true });

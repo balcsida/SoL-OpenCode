@@ -14,7 +14,8 @@ import { join } from "node:path";
  */
 export const PLUGIN_DIRECTORY_NAME = "sol-opencode";
 
-const SAFE_SESSION_ID = /^[a-z0-9][a-z0-9._-]*$/iu;
+/** One path segment: ASCII only (no `i`/`u` case folding), no separator, and a bounded length. */
+const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export function openCodeConfigDirectory(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
 	return env.OPENCODE_CONFIG_DIR ?? join(env.XDG_CONFIG_HOME || join(home, ".config"), "opencode");

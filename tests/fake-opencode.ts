@@ -69,6 +69,12 @@ class Subscription {
 	readonly queue: unknown[] = [];
 	wake: (() => void) | undefined;
 	closed = false;
+	/** OpenCode sends only the event types a subscriber asked for. */
+	readonly types: readonly string[] | undefined;
+
+	constructor(types: readonly string[] | undefined) {
+		this.types = types;
+	}
 }
 
 export class FakeOpenCode {
@@ -254,7 +260,8 @@ export class FakeOpenCode {
 				},
 			},
 			event: {
-				subscribe: (options?: { signal?: AbortSignal }) => fake.subscribe(options?.signal),
+				subscribe: (options?: { signal?: AbortSignal; types?: readonly string[] }) =>
+					fake.subscribe(options?.signal, options?.types),
 			},
 		};
 		return context as unknown as SolContext;
@@ -318,7 +325,9 @@ export class FakeOpenCode {
 	}
 
 	emit(event: unknown): void {
+		const type = (event as { type?: unknown } | null)?.type;
 		for (const subscription of this.subscriptions) {
+			if (subscription.types && !subscription.types.includes(type as string)) continue;
 			subscription.queue.push(event);
 			subscription.wake?.();
 		}
@@ -329,8 +338,8 @@ export class FakeOpenCode {
 		for (let index = 0; index < 5; index++) await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 
-	private subscribe(signal: AbortSignal | undefined): AsyncIterable<any> {
-		const subscription = new Subscription();
+	private subscribe(signal: AbortSignal | undefined, types?: readonly string[]): AsyncIterable<any> {
+		const subscription = new Subscription(types);
 		this.subscriptions.add(subscription);
 		const close = () => {
 			subscription.closed = true;

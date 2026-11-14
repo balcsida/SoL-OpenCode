@@ -88,7 +88,8 @@ export function loadSolPiConfig(sources: ConfigSources): LoadedConfig {
 
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8"));
+		// A byte-order mark is not JSON; editors on Windows add one.
+		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new Error(`Unable to read SoL-Pi config ${path}: ${reason}`);
