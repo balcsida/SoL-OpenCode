@@ -3,8 +3,11 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { type FileHandle, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
+import { publishPrivateFile } from "../private-file.ts";
 import { isRecord, type ReducerConfig, sha256 } from "./config.ts";
 
 export interface ArchiveObject {
@@ -24,8 +27,8 @@ export function archiveRoot(config: ReducerConfig): string {
 	return config.storeRoot;
 }
 
-export function isSourceHash(value: string): boolean {
-	return SHA256_PATTERN.test(value);
+export function isSourceHash(value: unknown): value is string {
+	return typeof value === "string" && SHA256_PATTERN.test(value);
 }
 
 export function archivePath(root: string, hash: string): string {
@@ -44,14 +47,18 @@ export async function archiveBody(root: string, body: string): Promise<ArchiveOb
 	const hash = sha256(body);
 	const path = archivePath(root, hash);
 	await mkdir(join(root, "objects", hash.slice(0, 2)), { recursive: true, mode: 0o700 });
+	let existing: FileHandle | undefined;
 	try {
-		await writeFile(path, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
-	} catch (error) {
-		if (!isRecord(error) || error.code !== "EEXIST") throw error;
-		const existing = await readFile(path, "utf8");
-		if (existing !== body || sha256(existing) !== hash) {
+		existing = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+		// Compared as bytes: the hash is of the UTF-8 encoding, which is what the file holds.
+		if (createHash("sha256").update(await existing.readFile()).digest("hex") !== hash) {
 			throw new Error(`Reducer archive integrity failure: ${path}`);
 		}
+	} catch (error) {
+		if (!isRecord(error) || error.code !== "ENOENT") throw error;
+		await publishPrivateFile(path, body);
+	} finally {
+		await existing?.close();
 	}
 	return {
 		hash,

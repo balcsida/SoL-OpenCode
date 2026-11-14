@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +18,8 @@ import {
 	REDUCER_RECEIPT_SCHEMA,
 	register,
 } from "../src/evidence-preserving-reducer/index.ts";
+import { archivePath } from "../src/evidence-preserving-reducer/archive.ts";
+import { containsLikelySecret } from "../src/evidence-preserving-reducer/config.ts";
 import { journalPath } from "../src/evidence-preserving-reducer/journal.ts";
 import { sessionRoot } from "../src/paths.ts";
 import { shellResult, shellTool, writeTool } from "./fake-builtins.ts";
@@ -260,14 +262,206 @@ describe("evidence-preserving reducer", () => {
 	});
 
 	it("fails open when OpenCode cannot select the configured reducer model", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { dataHome, fake } = await setup();
+		let calls = 0;
 		fake.generateText = async () => {
+			calls++;
 			throw Object.assign(new Error("Model unavailable: openai/gpt-5.6-luna"), { _tag: "Generate.ModelSelectionError" });
 		};
 		const result = await shellCall(fake, "pytest -q", { output: BODY, exit: 1 });
 		expect(texts(result)[0]).toBe(BODY);
 		expect(fake.rpcEvents).toEqual([]);
 		expect((await journal()).at(-1)).toMatchObject({ kind: "fallback", reason: "reducer-model-unavailable" });
+
+		// The next call would fail the same way: later logs are neither archived nor sent, and the user is told once.
+		const entries = (await journal()).length;
+		const later = `${BODY}later run\n`;
+		expect(texts(await shellCall(fake, "pytest -q", { output: later, exit: 1 }))[0]).toBe(later);
+		expect(calls).toBe(1);
+		expect((await journal()).length).toBe(entries);
+		expect(logged.mock.calls.map(([line]) => String(line))).toEqual([
+			expect.stringContaining("Reducer model is unavailable: openai/"),
+		]);
+
+		// The user may have signed in to the provider meanwhile, so the model is tried again later.
+		const now = Date.now();
+		vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60_000);
+		await shellCall(fake, "pytest -q", { output: later, exit: 1 });
+		expect(calls).toBe(2);
+	});
+
+	it("keeps a log that looks like it carries a credential away from the reducer model", () => {
+		// Assembled here so that no token-shaped literal sits in the repository.
+		const word = (length: number) => "a1B2c3D4".repeat(8).slice(0, length);
+		const credentials = [
+			"API_KEY=whatever",
+			"Authorization: Basic dXNlcjpwYXNz",
+			"client_secret: x",
+			'"secret_key": "abc"',
+			'password = "hunter2"',
+			'"password": "hunter2"',
+			"login(user, password='hunter2')",
+			'private_key = "MIIEvQIBADANBg"',
+			"DB_PASSWD=hunter2",
+			"MYSQL_ROOT_PASSWORD=hunter2x",
+			"Server=db;User Id=app;Password=p@ssw0rd;",
+			`DefaultEndpointsProtocol=https;AccountName=a;AccountKey=${word(24)}==`,
+			`//registry.npmjs.org/:_authToken=${word(12)}`,
+			`curl -H "X-Auth: Bearer ${word(24)}"`,
+			`AWS_SESSION_TOKEN=${word(24)}`,
+			`SIGNING_KEY=${word(12)}`,
+			"mysql --user root --password hunter2 app",
+			"deploy --token=abcd1234",
+			`GET /download?file=a&token=${word(12)}`,
+			`https://storage.example/blob?sv=1&sig=${word(20)}`,
+			"jdbc:mysql://db/app?user=app&password=hunter2",
+			`fatal: unable to access 'https://x-access-token:${word(20)}@github.com/o/r.git/'`,
+			`postgres://app:${word(8)}@db.internal:5432/app`,
+			`redis://:${word(8)}@cache:6379`,
+			"-----BEGIN OPENSSH PRIVATE KEY-----",
+			"-----BEGIN PRIVATE KEY-----",
+			"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+			`${"AK"}IA${"ABCDEFGHIJKLMNOP"}`,
+			`gh${"p_"}${word(36)}`,
+			`gh${"s_"}${word(36)}`,
+			`github_${"pat_"}${word(30)}`,
+			`glp${"at-"}${word(20)}`,
+			`s${"k-"}ant-api03-${word(40)}`,
+			`s${"k-"}proj-${word(40)}`,
+			`sk_${"live_"}${word(24)}`,
+			`xox${"b-"}123456789012-${word(12)}`,
+			`AI${"za"}${word(35)}`,
+			`ya${"29."}${word(40)}`,
+			`np${"m_"}${word(36)}`,
+			`h${"f_"}${word(34)}`,
+			`ey${"J"}${word(20)}.ey${"J"}${word(40)}.${word(30)}`,
+		];
+		for (const credential of credentials) {
+			expect(containsLikelySecret(`building\n  ${credential}\ndone\n`), credential).toBe(true);
+		}
+
+		// What a test or build log prints all the time. Refusing these would switch the reducer off for whole projects.
+		const ordinary = [
+			"error: unexpected token `}` at src/main.rs:3:1",
+			"SyntaxError: Unexpected token ':' in JSON at position 4",
+			"tests/test_password.py::test_reset PASSED",
+			"tests/test_auth.py::TestPassword::test_reset FAILED",
+			"assert password == expected",
+			">       password = make_password(raw)",
+			"    def login(self, password: str) -> bool:",
+			"error TS2322: Type '{ password: string; }' is not assignable to type 'Credentials'.",
+			'    user = User(name="x", password=password)',
+			"ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: YES)",
+			'FATAL: password authentication failed for user "app"',
+			"  <Table rowKey={row.id} sortKey={sortKey} csrfToken={token} />",
+			"usage: deploy --token <token> [--password <password>]",
+			"GET http://localhost:3000/@scope/pkg 404",
+			"Cloning git+ssh://git@github.com:org/repo.git",
+			"   Compiling task-runner v0.1.0 (/work/disk-usage-report)",
+			"see https://example.com/docs?key=1&page=2",
+			"make: *** [Makefile:12: check] Error 2",
+			"KEY=abc",
+			"error[E0308]: mismatched types: expected `Token`, found `Key`",
+			"eyJ is the start of a base64 JSON object",
+		];
+		for (const line of ordinary) expect(containsLikelySecret(`${line}\n`), line).toBe(false);
+	});
+
+	it("scans a log built to stall the credential patterns in linear time", () => {
+		const size = 600_000;
+		const stallers = ["a", "A", ":", "/", "-", " ", "\n", "://", "://a:", "secret", "password ", 'password="', "bearer ", "KEY=", "Password=", "?key=", "--token ", " eyJ", "-eyJ", `eyJ${"a".repeat(511)}`, "-----BEGIN ", "sk-", " gh", "AKIA", `://${"a".repeat(255)}`];
+		for (const staller of stallers) {
+			const text = staller.repeat(Math.ceil(size / staller.length));
+			const started = performance.now();
+			containsLikelySecret(text);
+			// A quadratic pattern takes minutes here; a linear one takes milliseconds.
+			expect(performance.now() - started, JSON.stringify(staller.slice(0, 12))).toBeLessThan(2_000);
+		}
+	});
+
+	it("leaves a runaway full-output file on disk instead of reading it", async () => {
+		const { dataHome, fake } = await setup();
+		const shellDirectory = join(dataHome, "opencode", "shell", fake.projectID);
+		await mkdir(shellDirectory, { recursive: true });
+		const huge = join(shellDirectory, "sh_0123456789ab.out");
+		await writeFile(huge, "");
+		// Past the limit of three bytes per accepted character; a real runaway log is gigabytes.
+		await truncate(huge, 4 * 1024 ** 2);
+		let calls = 0;
+		fake.generateText = async () => {
+			calls++;
+			return { text: "{}" };
+		};
+		const inline = `${"diagnostic tail\n".repeat(300)}${SIGNAL}\n\n[showing lines 301-900 of 900; full output saved to ${huge}]`;
+		const result = await shellCall(fake, "pytest -q", { output: inline, exit: 1, truncated: true });
+		expect(texts(result)[0]).toBe(inline);
+		expect(calls).toBe(0);
+		expect((await journal()).at(-1)).toMatchObject({ kind: "fallback", reason: "source-over-max-chars" });
+
+		// A command that is not a build or a test is not even looked at, however its output was saved.
+		const entries = (await journal()).length;
+		expect(texts(await shellCall(fake, "cat big.log", { output: inline, exit: 0, truncated: true }))[0]).toBe(inline);
+		expect((await journal()).length).toBe(entries);
+	});
+
+	it("archives a log once, whole, and refuses an archive that no longer matches it", async () => {
+		const { fake } = await setup();
+		const model = receiptModel(failureReceipt(SIGNAL));
+		fake.generateText = model.generate;
+		// A preview cut inside a surrogate pair is stored as U+FFFD; the same log must still match its archive.
+		const body = `${BODY}cut \ud83d`;
+		for (let run = 0; run < 2; run++) {
+			expect(texts(await shellCall(fake, "pytest -q", { output: body, exit: 1 }))[0]).toContain(REDUCER_RECEIPT_PREFIX);
+		}
+		const root = loadReducerConfig(sessionRoot(SESSION)).storeRoot;
+		const hash = sourceHash(model.calls[0]!.prompt);
+		const path = archivePath(root, hash);
+		expect(await readdir(join(path, ".."))).toEqual([`${hash}.txt`]);
+		if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+
+		await writeFile(path, "truncated");
+		expect(texts(await shellCall(fake, "pytest -q", { output: body, exit: 1 }))[0]).toBe(body);
+		expect((await journal()).at(-1)).toMatchObject({
+			kind: "fallback",
+			reason: "reducer-exception",
+			errorMessage: expect.stringContaining("integrity failure"),
+		});
+	});
+
+	it.skipIf(process.platform === "win32")("tells the model the error code of a failed readback, not the path on this machine", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { dataHome, fake } = await setup();
+		const model = receiptModel(failureReceipt(SIGNAL));
+		fake.generateText = model.generate;
+		await shellCall(fake, "pytest -q", { output: BODY, exit: 1 });
+		const hash = sourceHash(model.calls[0]!.prompt);
+		const path = archivePath(loadReducerConfig(sessionRoot(SESSION)).storeRoot, hash);
+		await rm(path);
+		await symlink(join(dataHome, "elsewhere"), path);
+
+		const outcome = completed(await fake.callTool("evidence_recall", { source_sha256: hash }, { sessionID: SESSION, id: "r1" }));
+		expect(outcome.content).toBe(`evidence_recall failed for ${hash}: ELOOP`);
+		expect(JSON.stringify(outcome)).not.toContain(dataHome);
+		expect(String(logged.mock.calls.at(-1)?.[0])).toContain(dataHome);
+		for (const offset of [-1, 0.5]) {
+			const refused = completed(
+				await fake.callTool("evidence_recall", { source_sha256: hash, offset }, { sessionID: SESSION, id: "r2" }),
+			);
+			expect(refused.content).toBe(`evidence_recall failed for ${hash}: offset must be a non-negative integer`);
+		}
+	});
+
+	it("removes a deleted session's archive and journal", async () => {
+		const { dataHome, fake } = await setup();
+		fake.generateText = receiptModel(failureReceipt(SIGNAL)).generate;
+		await shellCall(fake, "pytest -q", { output: BODY, exit: 1 });
+		await shellCall(fake, "pytest -q", { output: BODY, exit: 1 }, "ses_other");
+		const sessions = join(dataHome, "opencode", "sol-opencode");
+		expect((await readdir(sessions)).sort()).toEqual(["ses_other", SESSION]);
+
+		fake.emit({ type: "session.deleted", data: { sessionID: SESSION } });
+		await vi.waitFor(async () => expect(await readdir(sessions)).toEqual(["ses_other"]));
 	});
 
 	it("fails open when the reducer call times out", async () => {

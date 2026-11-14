@@ -28,7 +28,45 @@ export const DIAGNOSTIC_COMMAND =
 	/(?:^|[;&|()\s])(?:lake\s+build|lake\s+env\s+lean|lean|coq|cargo(?:\s+(?:build|test|check))?|zig\s+build|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest|py_compile)|ctest|cmake\s+--build|ninja|make|npm\s+test|pnpm\s+test|yarn\s+test|go\s+test|bazel\s+test)(?:\s|$)/i;
 
 export const FAILURE_SIGNAL = /error|failed|failure|fatal|exception|panic|timeout|unsolved|type mismatch|assert/i;
-export const LIKELY_SECRET = /(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i;
+
+/**
+ * A log that looks like it carries a credential is never sent to the reducer
+ * model. This is a precaution, not a secret scanner. Each pattern starts on a
+ * literal and has bounded repeats, so a log at the size limit costs one pass
+ * per pattern however it is built.
+ */
+export const LIKELY_SECRETS: readonly RegExp[] = [
+	// A credential word and, within the line, an assignment (SoL-Pi's rule).
+	/(?:api[_-]?key|authorization|bearer|access[_-]?token|secret)[^\n]{0,32}[=:][^\n]+/i,
+	// A quoted value assigned to one: `password = "x"`, `"auth_token": "x"`. Not `password: str` or `password=password`.
+	/(?:passw(?:or)?d|private[_-]?key|auth[_-]?token)["']?\s{0,3}[=:]\s{0,3}["'][^"'\s]{4}/i,
+	/bearer\s{1,8}[\w.~+/-]{20}/i,
+	// Environment dumps, connection strings, query strings, and command lines.
+	/(?:TOKEN|Token|KEY|Key|PASSWORD|PASSWD|Password|Pwd)=[\w+/.~-][^\s;&"']{3}/,
+	/[?&](?:token|key|sig|signature|password|passwd|pwd|secret)=[^&\s]{4}/i,
+	/--(?:password|passwd|token|secret|api[_-]?key)(?:=|\s{1,3})[^\s<[-]\S{3}/i,
+	// user:password@host in a URL.
+	/:\/\/[^\s/:@]{0,256}:[^\s/@]{1,256}@/,
+	/-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY/,
+	// Token formats of common services: AWS, GitHub, GitLab, OpenAI and Anthropic, Stripe, Slack, Google, npm,
+	// Hugging Face, and JWTs.
+	/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+	/\bgh[pousr]_[A-Za-z0-9]{36}/,
+	/\bgithub_pat_\w{22}/,
+	/\bglpat-[\w-]{20}/,
+	/\bsk-[\w-]{20}/,
+	/\b[sr]k_(?:live|test)_[A-Za-z0-9]{16}/,
+	/\bxox[abprs]-[A-Za-z0-9-]{10}/,
+	/\bAIza[\w-]{35}/,
+	/\bya29\.[\w-]{20}/,
+	/\bnpm_[A-Za-z0-9]{36}/,
+	/\bhf_[A-Za-z0-9]{30}/,
+	/(?<![\w-])eyJ[\w-]{8,512}\.eyJ[\w-]{8}/,
+];
+
+export function containsLikelySecret(text: string): boolean {
+	return LIKELY_SECRETS.some((pattern) => pattern.test(text));
+}
 
 export interface ReducerConfig {
 	readonly maxChars: number;

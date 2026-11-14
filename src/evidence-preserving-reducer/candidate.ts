@@ -3,7 +3,8 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 SoL-OpenCode contributors
  * SPDX-License-Identifier: MIT
  */
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { ToolResult } from "../context.ts";
 import { isRecord, recordValue } from "./config.ts";
@@ -28,7 +29,8 @@ export interface CompletedToolCall {
 
 export interface ReducibleToolResult {
 	readonly command: string;
-	readonly body: string;
+	/** The log itself. Read only for a command worth reducing; nothing when the full output is past `maxBytes`. */
+	readonly readBody: () => Promise<string | undefined>;
 	readonly isError: boolean;
 	/** Put the receipt back where the raw output was, leaving the rest of the result alone. */
 	readonly projectReceipt: (receipt: string) => Content;
@@ -65,13 +67,26 @@ async function safeShellOutputPath(path: string, shellOutputDirectory: string): 
  * evidence is checked against the exact bytes the command produced rather than
  * the tail preview.
  */
-async function exactBodyFromInline(inline: string, truncated: boolean, shellOutputDirectory: string): Promise<string> {
+async function exactBodyFromInline(
+	inline: string,
+	truncated: boolean,
+	shellOutputDirectory: string,
+	maxBytes: number,
+): Promise<string | undefined> {
 	if (!truncated) return inline;
 	// OpenCode appends the notice after the output, so the last one is its own.
 	const candidate = [...inline.matchAll(FULL_OUTPUT_NOTICE)].at(-1)?.[1]?.trim();
 	if (!candidate || !(await safeShellOutputPath(candidate, shellOutputDirectory))) return inline;
 	try {
-		return await readFile(candidate, "utf8");
+		const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+		try {
+			const status = await handle.stat();
+			if (!status.isFile()) return inline;
+			// A runaway log is left on disk: reading it could exhaust memory, and it is past the reducer's limit anyway.
+			return status.size > maxBytes ? undefined : await handle.readFile("utf8");
+		} finally {
+			await handle.close();
+		}
 	} catch {
 		return inline;
 	}
@@ -84,6 +99,7 @@ async function exactBodyFromInline(inline: string, truncated: boolean, shellOutp
 export async function reducibleToolResult(
 	call: CompletedToolCall,
 	shellOutputDirectory: string,
+	maxBytes = Number.POSITIVE_INFINITY,
 ): Promise<ReducibleToolResult | undefined> {
 	const blocks = contentBlocks(call.result);
 	if (call.tool === "shell") {
@@ -98,7 +114,7 @@ export async function reducibleToolResult(
 		if (!block || block.type !== "text") return undefined;
 		return {
 			command,
-			body: await exactBodyFromInline(block.text, recordValue(metadata, "truncated") === true, shellOutputDirectory),
+			readBody: () => exactBodyFromInline(block.text, recordValue(metadata, "truncated") === true, shellOutputDirectory, maxBytes),
 			isError: failedShell(metadata),
 			projectReceipt: (receipt) =>
 				blocks.map((item, itemIndex) => (itemIndex === index ? { type: "text" as const, text: receipt } : item)),
@@ -119,7 +135,7 @@ export async function reducibleToolResult(
 		const inline = suffix.slice(1);
 		return {
 			command,
-			body: await exactBodyFromInline(inline, recordValue(thenRun, "truncated") === true, shellOutputDirectory),
+			readBody: () => exactBodyFromInline(inline, recordValue(thenRun, "truncated") === true, shellOutputDirectory, maxBytes),
 			isError: status === "failed",
 			projectReceipt: (receipt) =>
 				blocks.map((item, itemIndex) =>
