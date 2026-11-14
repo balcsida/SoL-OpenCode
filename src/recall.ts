@@ -42,6 +42,8 @@ export async function recallPage(
 	path: string,
 	offset: number,
 ): Promise<{ readonly page: RecallPage; readonly text: string } | undefined> {
+	// The model sends the offset, and a negative one would be read from the start under another label.
+	if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
 	let chunk;
 	try {
 		chunk = await readRecallChunk(path, offset, RECALL_LIMITS);
@@ -65,4 +67,10 @@ export async function recallPage(
 
 export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** What the model is told about a failed read: a filesystem error's code, not its message, which names the absolute path. */
+export function failureReason(error: unknown): string {
+	const code = (error as { code?: unknown } | null)?.code;
+	return typeof code === "string" ? code : errorMessage(error);
 }

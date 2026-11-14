@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { LLMMessage, ToolResultPart } from "../src/context.ts";
 import { toolResultText } from "../src/messages.ts";
 import { FULL_SENDS, register, THRESHOLD_BYTES } from "../src/observation-pack/index.ts";
+import { publishPrivateFile } from "../src/private-file.ts";
 import {
 	assistantMessage,
 	contextEvent,
@@ -273,6 +274,90 @@ describe("observation pack", () => {
 		expect(result.content).toMatch(/^obs_recall failed for obs_[a-f0-9]{24}:/u);
 		expect(result.content).not.toMatch(/target bytes/u);
 		expect(result.metadata).toMatchObject({ code: "ELOOP" });
+	});
+
+	it.skipIf(process.platform === "win32")("tells the model the error code of a failed recall, not the path on this machine", async () => {
+		const errors = captureConsoleErrors();
+		const { fake, dataHome } = await setup();
+		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
+		const id = observationId("shell", "call-1", body);
+		await project(fake, toolResultMessage("call-1", "shell", body), 3);
+		const path = observationPath(dataHome, id);
+		await rm(path);
+		await symlink(join(dataHome, "elsewhere"), path);
+
+		const result = await recall(fake, id);
+		expect(result.content).toBe(`obs_recall failed for ${id}: ELOOP`);
+		expect(JSON.stringify(result)).not.toContain(dataHome);
+		// The detail stays in the server log.
+		expect(errors.some((error) => error.includes(dataHome))).toBe(true);
+	});
+
+	it("rejects an offset that is not a non-negative integer", async () => {
+		captureConsoleErrors();
+		const { fake } = await setup();
+		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
+		const id = observationId("shell", "call-1", body);
+		await project(fake, toolResultMessage("call-1", "shell", body), 3);
+		for (const offset of [-1, 1.5, Number.NaN, "5", 2 ** 60]) {
+			const result = await recall(fake, id, offset as number);
+			expect(result.content).toBe(`obs_recall failed for ${id}: offset must be a non-negative integer`);
+		}
+		expect((await recall(fake, ["obs_000000000000000000000000"] as never)).content).toMatch(/^Unknown observation id/u);
+	});
+
+	it("still returns the page when the ledger cannot be written", async () => {
+		const errors = captureConsoleErrors();
+		const { fake, dataHome } = await setup();
+		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
+		const id = observationId("shell", "call-1", body);
+		await project(fake, toolResultMessage("call-1", "shell", body), 3);
+		const ledger = join(objectsDirectory(dataHome), "..", "ledger.jsonl");
+		await rm(ledger);
+		await mkdir(ledger);
+
+		expect((await recall(fake, id)).content).toMatch(/observation bytes/u);
+		expect(errors.some((error) => error.includes("recall ledger entry failed"))).toBe(true);
+	});
+
+	it("removes a deleted session's archive and forgets its counters", async () => {
+		const { fake, dataHome } = await setup();
+		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
+		const message = toolResultMessage("call-1", "shell", body);
+		await project(fake, message, 3);
+		await project(fake, message, 1, "ses_b");
+		const sessionDirectory = (sessionID: string) => join(dataHome, "opencode", "sol-opencode", sessionID);
+
+		fake.emit({ type: "session.deleted", data: { sessionID: SESSION_ID } });
+		await vi.waitFor(async () => expect(await readdir(join(dataHome, "opencode", "sol-opencode"))).toEqual(["ses_b"]));
+		expect(await readdir(sessionDirectory("ses_b"))).toEqual(["observation-pack"]);
+		// A session OpenCode recreates under the same id starts over with full sends.
+		expect((await project(fake, message, 1))[0]).toBe(body);
+	});
+
+	it("publishes an object whole, owner-only, and leaves nothing behind when it cannot", async () => {
+		const directory = await temporaryDirectory();
+		const path = join(directory, "object.txt");
+		await publishPrivateFile(path, "whole\n");
+		expect(await readFile(path, "utf8")).toBe("whole\n");
+		if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+		expect(await readdir(directory)).toEqual(["object.txt"]);
+
+		// The name is taken by a directory, so the finished temporary file cannot be published.
+		await mkdir(join(directory, "taken"));
+		await expect(publishPrivateFile(join(directory, "taken"), "x")).rejects.toThrow();
+		expect((await readdir(directory)).sort()).toEqual(["object.txt", "taken"]);
+		await expect(publishPrivateFile(join(directory, "missing", "object.txt"), "x")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("stores one observation once when two requests archive it at the same time", async () => {
+		const errors = captureConsoleErrors();
+		const { fake, dataHome } = await setup();
+		const body = `stored\n${repeatPastThreshold("observation bytes\n")}`;
+		const message = toolResultMessage("call-1", "shell", body);
+		await Promise.all([projectMessages(fake, [message]), projectMessages(fake, [message]), projectMessages(fake, [message])]);
+		expect(await readdir(objectsDirectory(dataHome))).toEqual([`${observationId("shell", "call-1", body)}.txt`]);
+		expect(errors).toEqual([]);
 	});
 
 	it("reports unknown and malformed ids as content instead of throwing", async () => {
