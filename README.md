@@ -98,7 +98,7 @@ The TUI companion (`tui.tsx`, in the same directory) loads automatically: OpenCo
 
 ## Storage and security
 
-- **Archives:** ObservationPack and the reducer archive originals under `<OpenCode data>/sol-opencode/<sessionID>/`, normally `~/.local/share/opencode/sol-opencode/`. The archives stay local and are not deleted automatically.
+- **Archives:** ObservationPack and the reducer archive originals under `<OpenCode data>/sol-opencode/<sessionID>/`, normally `~/.local/share/opencode/sol-opencode/`. The archives stay local, readable only by their owner, and are removed when OpenCode deletes the session while the plugin is loaded.
 - **State:** Online Context Compact keeps its per-session state in OpenCode's plugin storage.
 - **Remote reduction:** the reducer may send eligible diagnostic logs to its configured model.
 

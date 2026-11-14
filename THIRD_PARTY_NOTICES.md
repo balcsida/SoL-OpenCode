@@ -32,7 +32,7 @@ Source files carried over from SoL-Pi keep NVIDIA's SPDX copyright line alongsid
 
 | Package | Pinned version | License | Source |
 |---|---:|---|---|
-| `@opencode/plugin` | 2.0.18 | MIT | <https://github.com/anomalyco/opencode> |
+| `@opencode/plugin` | 2.2.6 | MIT | <https://github.com/anomalyco/opencode> |
 
 `@opencode/plugin` brings its own transitive dependencies (among them `effect`, `zod`, and the `@opencode/*` schema and client packages), which retain their licenses. SoL-OpenCode imports only `@opencode/plugin`. At runtime OpenCode supplies the plugin host.
 
