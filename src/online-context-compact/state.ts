@@ -34,6 +34,12 @@ export type OnlineState = {
 	readonly cacheDebtRepaymentTokens: number;
 };
 
+/**
+ * Progress notes kept between compactions. They are stored with the state on
+ * every request, so a long run without a compaction must not grow them forever.
+ */
+export const MAX_PENDING_PROGRESS = 16;
+
 export function initialOnlineState(): OnlineState {
 	return {
 		version: 1,
@@ -123,7 +129,7 @@ export function parseOnlineState(value: unknown): OnlineState | undefined {
 		version: 1,
 		epoch: record.epoch,
 		plan,
-		pendingProgress: pendingProgress as readonly ProgressSummary[],
+		pendingProgress: (pendingProgress as readonly ProgressSummary[]).slice(-MAX_PENDING_PROGRESS),
 		requestCount: record.requestCount,
 		lastCompactionRequestCount: record.lastCompactionRequestCount ?? null,
 		lastBoundaryRequestCount: record.lastBoundaryRequestCount,
@@ -160,7 +166,7 @@ export function recordBoundary(
 	return {
 		...state,
 		plan: [...plan],
-		pendingProgress: progress ? [...state.pendingProgress, progress] : state.pendingProgress,
+		pendingProgress: progress ? [...state.pendingProgress, progress].slice(-MAX_PENDING_PROGRESS) : state.pendingProgress,
 		lastBoundaryRequestCount: state.requestCount,
 		completedBoundaryRequestCounts: [...state.completedBoundaryRequestCounts, interval],
 	};

@@ -31,6 +31,7 @@ const roots: string[] = [];
 
 afterEach(async () => {
 	vi.unstubAllEnvs();
+	vi.restoreAllMocks();
 	for (const cleanup of cleanups.splice(0)) await cleanup();
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -370,25 +371,153 @@ describe("online context compact", () => {
 		expect(stored.lastDecision).toMatchObject({ compact: true, requested: false });
 	});
 
-	it("clears a selection whose compaction failed, so a later boundary can request again", async () => {
+	it("requests no further compaction after one failed, until OpenCode compacts the session", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 		const scenario = await setup({ cacheWriteReadRatio: 1 });
 		await atBoundary(scenario);
 		scenario.fake.emit({
 			type: "session.compaction.failed",
-			data: { sessionID: SESSION, reason: "manual", error: { type: "compaction.failed", message: "nothing to compact" } },
+			data: { sessionID: SESSION, reason: "manual", error: { type: "compaction.failed", message: "provider overloaded" } },
 		});
 		await scenario.fake.settle();
 		let stored = await scenario.stored();
 		expect(stored.state.nativeCompactionCount).toBe(0);
 		expect(stored.lastDecision).toMatchObject({ compacted: false, compactionFailed: true });
+		expect(logged).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("failed; none is requested again"));
 
+		// A failed compaction ends the run. The next boundary must not end the next one the same way.
 		scenario.work(6_000);
 		await scenario.request();
 		await scenario.plan(completedSecond(), "plan-2");
+		expect(scenario.fake.compactions).toHaveLength(1);
+
+		// OpenCode's own compaction went through, so the next boundary may ask again.
+		await scenario.compactNatively("SUMMARY: by OpenCode", "auto");
+		for (let index = 0; index < 4; index++) {
+			scenario.work(6_000);
+			await scenario.request();
+		}
+		await scenario.plan(allCompleted(), "plan-3");
 		expect(scenario.fake.compactions).toHaveLength(2);
 		stored = await scenario.stored();
 		expect(stored.lastDecision).toMatchObject({ compact: true, requested: true });
 		expect(stored.lastDecision).not.toHaveProperty("compactionFailed");
+	});
+
+	it("keeps the session working when its stored state cannot be read", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeOpenCode("/tmp/occ-project");
+		const ctx = fake.ctx();
+		let reads = 0;
+		const broken = {
+			...ctx,
+			storage: {
+				...ctx.storage,
+				get: async () => {
+					reads++;
+					throw new Error("storage unavailable");
+				},
+			},
+		};
+		cleanups.push(await register(broken, { ...DEFAULT_CONFIG, onlineContextCompact: true }, { keepRecentTokens: KEEP }));
+		const scenario = new Scenario(fake);
+		scenario.history.push(userMessage("Implement the feature.", "msg_user") as LLMMessage);
+		// The request goes out, and the plan tool answers, from a fresh state.
+		expect(await scenario.request()).toHaveLength(1);
+		expect((await scenario.plan(PLAN, "plan-0")).metadata).toMatchObject({ task_status: "active" });
+		expect(reads).toBe(1);
+		expect(logged).toHaveBeenCalledExactlyOnceWith("[online-context-compact] state load failed, starting over: storage unavailable");
+	});
+
+	it("leaves a request alone when the mechanism itself fails", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const scenario = await setup();
+		const event = contextEvent(SESSION, [userMessage("hi", "msg_user")]);
+		// A message shape this plugin has never seen.
+		(event as { messages: unknown }).messages = [null, { role: "assistant" }];
+		await expect(scenario.fake.runSessionHook("context", event)).resolves.toBeDefined();
+		expect(event.messages).toEqual([null, { role: "assistant" }]);
+		expect(logged).toHaveBeenCalledWith(expect.stringContaining("online-context-compact context hook failed and was skipped"));
+	});
+
+	it("does not bring a deleted session's record back with a save that was still running", async () => {
+		const fake = new FakeOpenCode("/tmp/occ-project");
+		const ctx = fake.ctx();
+		const slow = {
+			...ctx,
+			storage: {
+				...ctx.storage,
+				set: async (key: string, value: unknown) => {
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					await ctx.storage.set(key, value as never);
+				},
+			},
+		};
+		cleanups.push(await register(slow, { ...DEFAULT_CONFIG, onlineContextCompact: true }, { keepRecentTokens: KEEP }));
+		const scenario = new Scenario(fake);
+		scenario.history.push(userMessage("Implement the feature.", "msg_user") as LLMMessage);
+		await scenario.request();
+		expect(fake.storage.has("occ/ses_occ")).toBe(true);
+
+		// OpenCode deletes the session while a request of it is still being counted and saved.
+		const counting = scenario.request();
+		fake.emit({ type: "session.deleted", data: { sessionID: SESSION } });
+		await counting;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(fake.storage.has("occ/ses_occ")).toBe(false);
+	});
+
+	it("stops waiting for a compaction whose end was lost with the event stream", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeOpenCode("/tmp/occ-project");
+		const ctx = fake.ctx();
+		let breakStream = (): void => {};
+		let opened = 0;
+		const flaky = {
+			...ctx,
+			event: {
+				// The first stream delivers nothing and then fails, as OpenCode fails a slow consumer.
+				subscribe: (options: Parameters<typeof ctx.event.subscribe>[0]) =>
+					++opened > 1
+						? ctx.event.subscribe(options)
+						: (async function* (): AsyncGenerator<never> {
+								await new Promise<void>((resolve) => {
+									breakStream = resolve;
+								});
+								throw new Error("slow consumer");
+							})(),
+			},
+		} as typeof ctx;
+		cleanups.push(
+			await register(flaky, { ...DEFAULT_CONFIG, onlineContextCompact: true, cacheWriteReadRatio: 1 }, { keepRecentTokens: KEEP }),
+		);
+		const scenario = new Scenario(fake);
+		await atBoundary(scenario);
+		expect(fake.compactions).toHaveLength(1);
+
+		// Its session.compaction.ended is among the events that never arrive.
+		breakStream();
+		await vi.waitFor(() => expect(fake.subscriptions.size).toBe(1), { timeout: 2000 });
+		scenario.work(6_000);
+		await scenario.request();
+		await scenario.plan(completedSecond(), "plan-2");
+		expect(fake.compactions).toHaveLength(2);
+	});
+
+	it("forgets the last request once the run that sent it is over", async () => {
+		const scenario = await setup({ cacheWriteReadRatio: 1 });
+		scenario.history.push(userMessage("Implement the feature.", "msg_user") as LLMMessage);
+		await scenario.request();
+		await scenario.plan(PLAN, "plan-0");
+		for (let index = 0; index < 4; index++) {
+			scenario.work(6_000);
+			await scenario.request();
+		}
+		scenario.fake.emit({ type: "session.execution.succeeded", data: { sessionID: SESSION } });
+		await scenario.fake.settle();
+		// No request of a running session is held any more, so this boundary has nothing to price.
+		await scenario.plan(completedFirst(), "plan-1");
+		expect(scenario.fake.compactions).toHaveLength(0);
 	});
 
 	it("uses the provider-counted size of the last step when it exceeds the estimate", async () => {
