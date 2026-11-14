@@ -4,7 +4,9 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import type { ToolResult } from "../context.ts";
 
 export const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
@@ -74,8 +76,12 @@ export function resultText(result: ToolResult): string {
 		.join("\n\n");
 }
 
+/** Streamed, and only for a regular file: `/dev/zero` or a FIFO would otherwise be read without end. */
 async function fileSha256(path: string): Promise<string> {
-	return createHash("sha256").update(await readFile(path)).digest("hex");
+	if (!(await stat(path)).isFile()) throw new Error("the mutation target is not a regular file");
+	const hash = createHash("sha256");
+	await pipeline(createReadStream(path), hash);
+	return hash.digest("hex");
 }
 
 export async function assertUnchangedBeforeCommand(

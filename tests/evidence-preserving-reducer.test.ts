@@ -21,7 +21,7 @@ import {
 import { journalPath } from "../src/evidence-preserving-reducer/journal.ts";
 import { sessionRoot } from "../src/paths.ts";
 import { shellResult, shellTool, writeTool } from "./fake-builtins.ts";
-import { type CallOutcome, FakeOpenCode } from "./fake-opencode.ts";
+import { type CallOutcome, contextEvent, FakeOpenCode } from "./fake-opencode.ts";
 
 const SESSION = "ses_reducer";
 const cleanupPaths: string[] = [];
@@ -85,6 +85,9 @@ async function setup(
 		fake.seedTool(writeTool(directory));
 		fake.seedTool(shellTool(options.shell ?? (async () => ({ output: "", exit: 0 }))));
 		cleanups.push(await registerActionFusion(fake.ctx(), config));
+		// The agent loop offers the agent its tools before any tool call.
+		const tool = { description: "tool", input: { type: "object", properties: {} } };
+		await fake.runSessionHook("context", contextEvent(SESSION, [], { tools: { write: tool, shell: tool } }));
 	}
 	await register(fake.ctx(), config, options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }, fake.report);
 	return { dataHome, directory, fake };
