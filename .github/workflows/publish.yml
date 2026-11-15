@@ -1,6 +1,7 @@
-# Publishes to npm when a GitHub release is published, via npm trusted publishing (OIDC, no token).
+# Stages a release on npm when a GitHub release is published, via npm trusted publishing (OIDC, no token).
+# A staged version is not public yet: a maintainer approves it with 2FA (`npm stage approve`).
 # Run by hand, it rehearses a release: every step except the upload to npm.
-name: Publish to npm
+name: Stage on npm
 
 on:
   release:
@@ -11,16 +12,17 @@ permissions:
   contents: read
 
 jobs:
-  # The same checks as CI, on the tarball that will be published, and only
+  # The same checks as CI, on the tarball that will be staged, and only
   # for a tag that matches package.json on a commit of main.
   verify:
     uses: ./.github/workflows/verify.yml
     with:
       release: ${{ github.event_name == 'release' }}
 
-  # Publishes the very file the live checks ran against. This job can mint
-  # the npm token, so it checks out nothing and installs nothing.
-  publish:
+  # Stages the very file the live checks ran against. This job can mint
+  # the npm token, so it checks out nothing and installs nothing. With a
+  # trusted publisher on npm that allows staging only, the token cannot publish.
+  stage:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -29,13 +31,13 @@ jobs:
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24" # ships npm >= 11.5.1, which trusted publishing needs
+          node-version: "24" # ships npm 11.19 or newer, which has trusted publishing and `npm stage`
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: package
       - if: github.event_name == 'release'
-        run: npm publish ./*.tgz
+        run: npm stage publish ./*.tgz
       - if: github.event_name != 'release'
-        run: npm publish --dry-run ./*.tgz
+        run: npm stage publish --dry-run ./*.tgz

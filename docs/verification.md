@@ -185,8 +185,10 @@ The checks test what happened, not exact byte counts, so they hold across OpenCo
 Three workflows call it:
 
 - **CI**, for every pull request and for `main`. Branch protection requires its `check` status.
-- **Publish to npm**, when a GitHub release is published. It also refuses a tag that does not match `version` in `package.json`, and a commit that is not on `main`. It then publishes the tarball the live runs passed on, from a job that checks out nothing and installs nothing. Run by hand, it rehearses a release: everything except the upload to npm.
+- **Stage on npm**, when a GitHub release is published. It also refuses a tag that does not match `version` in `package.json`, and a commit that is not on `main`. It then stages the tarball the live runs passed on (`npm stage publish`), from a job that checks out nothing and installs nothing. Run by hand, it rehearses a release: everything except the upload to npm.
 - **Newest OpenCode**, weekly, with the latest OpenCode release instead of the pinned one. GitHub mails a failed run to whoever last changed the schedule, and switches the schedule off after 60 days without activity in the repository.
+
+A staged version is not public. The trusted publisher on npm is meant to allow `npm stage publish` and nothing else, so that no workflow run can publish by itself. A maintainer lists what is staged with `npm stage list @balcsida/sol-opencode`, can fetch the staged file with `npm stage download <stage-id>` to compare it or to run `SOL_TARBALL=<file> scripts/live/verify.sh all` on it, and makes it public with `npm stage approve <stage-id>`, which asks for 2FA.
 
 ## What these runs do not show
 
