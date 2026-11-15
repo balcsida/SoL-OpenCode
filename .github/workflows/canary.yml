@@ -1,0 +1,17 @@
+# Runs the release checks inside the newest OpenCode every week, so that an
+# OpenCode release that breaks the plugin shows up here before it does for a user.
+name: Newest OpenCode
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+    with:
+      opencode: latest
