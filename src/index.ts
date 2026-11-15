@@ -59,14 +59,27 @@ export async function registerConfiguredFeatures(ctx: SolContext, config: SolPiC
 	} catch (error) {
 		console.error(`[sol-opencode] TUI channel unavailable: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	for (const [enabled, , register] of mechanisms) {
-		if (!enabled) continue;
-		const cleanup = await register(ctx, config, report);
-		if (cleanup) cleanups.push(cleanup);
-	}
-	return async () => {
-		for (const cleanup of cleanups.reverse()) await cleanup();
+	const dispose = async (): Promise<void> => {
+		for (const cleanup of cleanups.splice(0).reverse()) {
+			try {
+				await cleanup();
+			} catch (error) {
+				console.error(`[sol-opencode] cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 	};
+	try {
+		for (const [enabled, , register] of mechanisms) {
+			if (!enabled) continue;
+			const cleanup = await register(ctx, config, report);
+			if (cleanup) cleanups.push(cleanup);
+		}
+	} catch (error) {
+		// OpenCode marks the plugin failed; what did register must not outlive that.
+		await dispose();
+		throw error;
+	}
+	return dispose;
 }
 
 export default Plugin.define({

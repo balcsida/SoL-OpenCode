@@ -30,6 +30,10 @@ describe("OpenCode directories", () => {
 		expect(sessionRoot("ses_0123abc", "/data/opencode")).toBe("/data/opencode/sol-opencode/ses_0123abc");
 		expect(() => sessionRoot("../escape", "/data/opencode")).toThrow("safe OpenCode session id");
 		expect(() => sessionRoot("", "/data/opencode")).toThrow("safe OpenCode session id");
+		// U+212A KELVIN SIGN case-folds to "k" under the `iu` flags; ids stay ASCII and bounded.
+		expect(() => sessionRoot("ses_\u212A", "/data/opencode")).toThrow("safe OpenCode session id");
+		expect(() => sessionRoot(`s${"a".repeat(128)}`, "/data/opencode")).toThrow("safe OpenCode session id");
+		expect(sessionRoot(`s${"a".repeat(127)}`, "/data/opencode")).toContain("sol-opencode");
 	});
 
 	it("locates OpenCode's shell output directory for a project", () => {

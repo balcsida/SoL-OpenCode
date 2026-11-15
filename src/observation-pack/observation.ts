@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { publishPrivateFile } from "../private-file.ts";
 
 /** Only tool results larger than this participate. */
 export const THRESHOLD_BYTES = 10 * 1024;
@@ -18,7 +19,6 @@ export const PLACEHOLDER_EXCERPT_BYTES = 1024;
 const CHARS_PER_TOKEN = 4;
 const OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
 const READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 
 /**
  * Receipts from the evidence-preserving reducer are already a reduction of a
@@ -84,8 +84,8 @@ export function observationPath(runtimeRoot: string, id: string): string {
 	return join(runtimeRoot, "observation-pack", "objects", `${id}.txt`);
 }
 
-export function isObservationId(id: string): boolean {
-	return OBSERVATION_ID_PATTERN.test(id);
+export function isObservationId(id: unknown): id is string {
+	return typeof id === "string" && OBSERVATION_ID_PATTERN.test(id);
 }
 
 export function createObservation(result: TextToolResult, runtimeRoot: string): Observation | undefined {
@@ -121,30 +121,28 @@ export async function ensureStored(observation: Observation): Promise<void> {
 		throw new Error(`Observation directory is not a regular directory for ${observation.id}`);
 	}
 
-	let handle: FileHandle | undefined;
+	let existingHandle: FileHandle;
 	try {
-		handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 0o600);
-		await handle.writeFile(observation.text, { encoding: "utf8" });
+		existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
 	} catch (error) {
-		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-		const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
-		try {
-			const existing = await existingHandle.stat();
-			if (!existing.isFile()) {
-				throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
-			}
-			if (existing.size !== observation.bytes) {
-				throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
-			}
-			const existingContent = await existingHandle.readFile();
-			if (hash(existingContent) !== observation.contentHash) {
-				throw new Error(`Content-addressed observation hash mismatch for ${observation.id}`);
-			}
-		} finally {
-			await existingHandle.close();
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+		await publishPrivateFile(observation.filePath, observation.text);
+		return;
+	}
+	try {
+		const existing = await existingHandle.stat();
+		if (!existing.isFile()) {
+			throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
+		}
+		if (existing.size !== observation.bytes) {
+			throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
+		}
+		const existingContent = await existingHandle.readFile();
+		if (hash(existingContent) !== observation.contentHash) {
+			throw new Error(`Content-addressed observation hash mismatch for ${observation.id}`);
 		}
 	} finally {
-		await handle?.close();
+		await existingHandle.close();
 	}
 }
 

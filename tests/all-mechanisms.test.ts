@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import plugin, { PLUGIN_ID, registerConfiguredFeatures } from "../src/index.ts";
 import { editTool, shellTool, writeTool } from "./fake-builtins.ts";
-import { FakeOpenCode } from "./fake-opencode.ts";
+import { contextEvent, FakeOpenCode } from "./fake-opencode.ts";
 
 const ALL_ENABLED = {
 	version: 1,
@@ -110,6 +110,52 @@ describe("SoL-OpenCode plugin entry", () => {
 		opencode.options = { version: 1, actionFusion: "yes" };
 		await expect(plugin.setup(opencode.ctx() as never)).rejects.toThrow("SoL-Pi config actionFusion must be boolean");
 	});
+
+	it("undoes what already registered when a later mechanism fails to register", async () => {
+		const opencode = await fake();
+		const ctx = opencode.ctx();
+		const broken = {
+			...ctx,
+			tool: {
+				...ctx.tool,
+				transform: async () => {
+					throw new Error("registry unavailable");
+				},
+			},
+		};
+		await expect(
+			registerConfiguredFeatures(broken, { ...DEFAULT_CONFIG, actionFusion: true, observationPack: true }),
+		).rejects.toThrow("registry unavailable");
+		// Action Fusion's event subscription and the TUI channel did not outlive the failure.
+		expect(opencode.subscriptions.size).toBe(0);
+		expect(opencode.rpcRegistrations.map((registration) => registration.disposed)).toEqual([true]);
+	});
+
+	it("runs every cleanup even when one of them fails", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const opencode = await fake();
+		const ctx = opencode.ctx();
+		const dispose = await registerConfiguredFeatures(
+			{
+				...ctx,
+				rpc: {
+					register: async () => ({
+						events: { emit: async () => {} },
+						dispose: async () => {
+							throw new Error("channel already closed");
+						},
+					}),
+				},
+			} as never,
+			{ ...DEFAULT_CONFIG, actionFusion: true },
+		);
+		expect(opencode.subscriptions.size).toBe(1);
+		await expect(dispose()).resolves.toBeUndefined();
+		expect(opencode.subscriptions.size).toBe(0);
+		expect(logged).toHaveBeenCalledWith("[sol-opencode] cleanup failed: channel already closed");
+		logged.mockRestore();
+	});
+
 	describe("TUI channel", () => {
 		const call = { sessionID: "ses_rpc", id: "w-1", messageID: "msg_1", agent: "build" };
 		const fusedWrite = { path: "a.txt", content: "a\n", then_run: { command: "check" } };
@@ -123,6 +169,13 @@ describe("SoL-OpenCode plugin entry", () => {
 			return opencode;
 		}
 
+		/** Register, then let the agent loop offer the agent its tools, as it does before any tool call. */
+		async function registerFusion(opencode: FakeOpenCode): Promise<void> {
+			cleanups.push(await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+			const tool = { description: "tool", input: { type: "object", properties: {} } };
+			await opencode.runSessionHook("context", contextEvent(call.sessionID, [], { tools: { write: tool, shell: tool } }));
+		}
+
 		function resultText(outcome: Awaited<ReturnType<FakeOpenCode["callTool"]>>): string {
 			if (outcome.status !== "completed") throw new Error(`expected completed, got ${outcome.status}`);
 			const content = outcome.result.content;
@@ -131,7 +184,7 @@ describe("SoL-OpenCode plugin entry", () => {
 
 		it("delivers a saving through the real report", async () => {
 			const opencode = await fusionFake();
-			cleanups.push(await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+			await registerFusion(opencode);
 			await opencode.callTool("write", fusedWrite, call);
 			expect(opencode.rpcEvents).toEqual([
 				{ name: "saving", data: { sessionID: "ses_rpc", mechanism: "Action Fusion", saving: "1 model round-trip avoided" } },
@@ -163,7 +216,7 @@ describe("SoL-OpenCode plugin entry", () => {
 			const spy = vi.spyOn(console, "error").mockImplementation(() => {});
 			try {
 				const opencode = await fusionFake();
-				cleanups.push(await registerConfiguredFeatures(opencode.ctx(), { ...DEFAULT_CONFIG, actionFusion: true }));
+				await registerFusion(opencode);
 				opencode[field] = new Error("emit broke");
 				const text = resultText(await opencode.callTool("write", fusedWrite, call));
 				expect(text).toContain("Created file successfully: a.txt");

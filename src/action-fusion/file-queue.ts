@@ -33,13 +33,14 @@ export function windowsPath(filePath: string, platform: NodeJS.Platform = proces
 export function resolveToolPath(
 	directory: string,
 	filePath: string,
-	home = homedir(),
+	home?: string,
 	platform: NodeJS.Platform = process.platform,
 ): string {
 	const normalized = windowsPath(filePath, platform);
-	if (normalized === "~") return resolve(directory, home);
+	// Looked up only for a `~` path: `homedir()` throws for a uid with no home and no passwd entry.
+	if (normalized === "~") return resolve(directory, home ?? homedir());
 	if (normalized.startsWith("~/") || (platform === "win32" && normalized.startsWith("~\\"))) {
-		return resolve(directory, join(home, normalized.slice(2)));
+		return resolve(directory, join(home ?? homedir(), normalized.slice(2)));
 	}
 	return resolve(directory, normalized);
 }
@@ -62,7 +63,9 @@ async function canonicalQueueKey(filePath: string): Promise<string> {
 		try {
 			return resolve(await realpath(current), ...missingSegments);
 		} catch (error) {
-			if (!isMissingPathError(error)) throw error;
+			// A path that cannot be canonicalized (a symlink loop, no access, a NUL byte) still
+			// needs a key: the built-in mutation reports the real error.
+			if (!isMissingPathError(error)) return resolvedPath;
 			const parent = dirname(current);
 			if (parent === current) return resolvedPath;
 			missingSegments.unshift(basename(current));

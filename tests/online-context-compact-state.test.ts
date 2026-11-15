@@ -101,6 +101,20 @@ describe("Online Context Compact state snapshots", () => {
 		expect(state.pendingProgress).toEqual([PROGRESS]);
 	});
 
+	it("keeps only the latest progress summaries of a long run without a compaction", () => {
+		let state = initialOnlineState();
+		for (let index = 0; index < 40; index++) {
+			state = recordBoundary(recordProviderRequest(state, 100), PLAN, { ...PROGRESS, stepId: `step-${index}` });
+		}
+		expect(state.pendingProgress.map((item) => item.stepId)).toEqual(
+			Array.from({ length: 16 }, (_, index) => `step-${index + 24}`),
+		);
+		expect(state.completedBoundaryRequestCounts).toHaveLength(40);
+		// A record stored by an older version is cut the same way when it is loaded.
+		const stored = { ...state, pendingProgress: Array.from({ length: 40 }, () => PROGRESS) };
+		expect(parseOnlineState(JSON.parse(JSON.stringify(stored)))?.pendingProgress).toHaveLength(16);
+	});
+
 	it("preserves request intervals and growth history across compaction", () => {
 		let before = recordProviderRequest(initialOnlineState(), 5_000);
 		before = recordBoundary(recordProviderRequest(before, 5_200), PLAN, PROGRESS);

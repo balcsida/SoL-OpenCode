@@ -21,12 +21,14 @@
 
 import type { SolPiConfig } from "../config.ts";
 import type { Cleanup, ContextHookEvent, LLMMessage, SolContext, ToolResult } from "../context.ts";
+import { failOpen, subscribeSessionEvents } from "../hooks.ts";
 import { errorMessage, toolFailure } from "../recall.ts";
 import { formatSavingsCount, type ReportSaving } from "../savings.ts";
 import { type CompactionDecision, DEFAULT_COMPACTION_ECONOMICS, decideCompaction } from "./economics.ts";
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
 import { archivedTokens, findCutPoint, POST_COMPACTION_PLAN_REMINDER, requestTokens, tokenEstimate } from "./projection.ts";
 import {
+	initialOnlineState,
 	type OnlineState,
 	type ProgressSummary,
 	recordBoundary,
@@ -35,7 +37,7 @@ import {
 	recordCorrection,
 	recordProviderRequest,
 } from "./state.ts";
-import { loadSession, saveSession, storageKey } from "./store.ts";
+import { loadSession, type StoredSession, saveSession, storageKey } from "./store.ts";
 import { type PlanUpdateInput, registerOnlineTools } from "./tools.ts";
 
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
@@ -62,6 +64,10 @@ interface SessionRuntime {
 	/** Provider-counted size of the latest completed step, like Pi's getContextUsage(). */
 	reportedTokens: number | undefined;
 	busy: boolean;
+	/** A requested compaction failed, and OpenCode has not compacted the session since. */
+	compactionFailed: boolean;
+	/** OpenCode deleted the session; nothing may store its state again. */
+	deleted: boolean;
 	lock: Promise<void>;
 }
 
@@ -113,14 +119,22 @@ export async function register(
 	const runtimeFor = (sessionID: string): Promise<SessionRuntime> => {
 		let runtime = sessions.get(sessionID);
 		if (!runtime) {
-			runtime = loadSession(ctx.storage, sessionID).then((stored) => ({
-				...stored,
-				observed: undefined,
-				selected: undefined,
-				reportedTokens: undefined,
-				busy: false,
-				lock: Promise.resolve(),
-			}));
+			runtime = loadSession(ctx.storage, sessionID)
+				.catch((error: unknown): StoredSession => {
+					// A state that cannot be read costs the compaction history, not the session.
+					console.error(`[online-context-compact] state load failed, starting over: ${errorMessage(error)}`);
+					return { state: initialOnlineState(), lastDecision: undefined };
+				})
+				.then((stored) => ({
+					...stored,
+					observed: undefined,
+					selected: undefined,
+					reportedTokens: undefined,
+					busy: false,
+					compactionFailed: false,
+					deleted: false,
+					lock: Promise.resolve(),
+				}));
 			sessions.set(sessionID, runtime);
 		}
 		return runtime;
@@ -138,10 +152,12 @@ export async function register(
 			release();
 		}
 	};
-	const save = (sessionID: string, runtime: SessionRuntime) =>
-		saveSession(ctx.storage, sessionID, runtime).catch((error: unknown) =>
+	const save = async (sessionID: string, runtime: SessionRuntime): Promise<void> => {
+		if (runtime.deleted) return;
+		await saveSession(ctx.storage, sessionID, runtime).catch((error: unknown) =>
 			console.error(`[online-context-compact] state save failed: ${errorMessage(error)}`),
 		);
+	};
 
 	const contextWindow = async (model: ContextHookEvent["model"]): Promise<number | null> => {
 		const key = `${model.providerID}/${model.id}`;
@@ -223,7 +239,9 @@ export async function register(
 					runtime.state = recordBoundary(runtime.state, steps, progressSummary(input, completedIds[0] ?? ""));
 					// A boundary is decided as soon as it is recorded, like SoL-Pi's turn_end:
 					// the request that produced this call has been counted and observed.
-					if (runtime.observed && !runtime.selected) {
+					// After a failed compaction the next one would likely fail too, at the
+					// price of a summary request each time, so OpenCode's own goes first.
+					if (runtime.observed && !runtime.selected && !runtime.compactionFailed) {
 						const decision = await decide(runtime, runtime.observed);
 						const requested = decision.compact ? await requestCompaction(input.sessionID, runtime, decision) : false;
 						runtime.lastDecision = { ...decision, requested, at: Date.now() };
@@ -248,7 +266,7 @@ export async function register(
 	});
 
 	// Registered after ObservationPack, so the estimate sees the packed request.
-	await ctx.session.hook("context", async (event) => {
+	await ctx.session.hook("context", failOpen("online-context-compact context hook", async (event) => {
 		const runtime = await runtimeFor(event.sessionID);
 		await withLock(runtime, async () => {
 			const estimated = requestTokens(event);
@@ -258,12 +276,12 @@ export async function register(
 			runtime.state = recordProviderRequest(runtime.state, writeTokens);
 			await save(event.sessionID, runtime);
 		});
-	});
+	}));
 
 	// SoL-Pi treated a steering message or a `CORRECTION:` prompt as a correction.
 	// OpenCode delivers every prompt as "steer" by default, so a prompt counts
 	// only when it arrives while the session is running.
-	await ctx.session.hook("prompt", async (event) => {
+	await ctx.session.hook("prompt", failOpen("online-context-compact prompt hook", async (event) => {
 		const runtime = await runtimeFor(event.sessionID);
 		const text = event.prompt.text ?? "";
 		const correction = text.startsWith("CORRECTION:") || (runtime.busy && event.delivery === "steer");
@@ -278,13 +296,21 @@ export async function register(
 			}
 			await save(event.sessionID, runtime);
 		});
-	});
+	}));
 
-	const subscription = new AbortController();
 	const handleEvent = async (type: string, sessionID: string, data: Record<string, unknown>) => {
 		if (type === "session.deleted") {
+			const loaded = sessions.get(sessionID);
+			const remove = () => ctx.storage.remove(storageKey(sessionID));
+			if (!loaded) return remove();
+			// Behind whatever still holds the session, and before a request can load
+			// it afresh, so that a late save cannot bring the record back.
+			const runtime = await loaded;
+			await withLock(runtime, async () => {
+				runtime.deleted = true;
+				await remove();
+			});
 			sessions.delete(sessionID);
-			await ctx.storage.remove(storageKey(sessionID));
 			return;
 		}
 		if (!sessions.has(sessionID)) {
@@ -301,6 +327,8 @@ export async function register(
 			type === "session.execution.interrupted"
 		) {
 			runtime.busy = false;
+			// Only a plan update of the same run prices this request; an idle session need not keep its messages.
+			runtime.observed = undefined;
 		} else if (type === "session.step.ended") {
 			runtime.reportedTokens = stepTokens(data.tokens);
 		} else if (type === "session.compaction.ended") {
@@ -309,6 +337,7 @@ export async function register(
 				// own threshold compaction, or a user's, carries none.
 				const selected = data.reason === "manual" ? runtime.selected : undefined;
 				runtime.selected = undefined;
+				runtime.compactionFailed = false;
 				runtime.observed = undefined;
 				runtime.reportedTokens = undefined;
 				const decision = selected?.decision;
@@ -334,6 +363,10 @@ export async function register(
 			await withLock(runtime, async () => {
 				if (!runtime.selected || data.reason !== "manual") return;
 				runtime.selected = undefined;
+				runtime.compactionFailed = true;
+				console.error(
+					`[online-context-compact] the compaction requested for ${sessionID} failed; none is requested again until OpenCode compacts the session`,
+				);
 				runtime.lastDecision = { ...runtime.lastDecision, compacted: false, compactionFailed: true };
 				await save(sessionID, runtime);
 			});
@@ -345,20 +378,37 @@ export async function register(
 			});
 		}
 	};
-	void (async () => {
-		for await (const event of ctx.event.subscribe({ signal: subscription.signal })) {
-			const type = (event as { type?: unknown }).type;
-			const data = (event as { data?: unknown }).data;
-			if (typeof type !== "string" || typeof data !== "object" || data === null) continue;
-			const sessionID = (data as { sessionID?: unknown }).sessionID;
-			if (typeof sessionID !== "string") continue;
-			await handleEvent(type, sessionID, data as Record<string, unknown>).catch((error: unknown) =>
-				console.error(`[online-context-compact] ${type} handling failed: ${errorMessage(error)}`),
-			);
-		}
-	})().catch((error: unknown) => console.error(`[online-context-compact] event subscription ended: ${errorMessage(error)}`));
-
-	return () => subscription.abort();
+	return subscribeSessionEvents(
+		ctx,
+		"online-context-compact",
+		[
+			"session.deleted",
+			"session.execution.started",
+			"session.execution.succeeded",
+			"session.execution.failed",
+			"session.execution.interrupted",
+			"session.idle",
+			"session.step.ended",
+			"session.compaction.ended",
+			"session.compaction.failed",
+			"session.revert.committed",
+		],
+		handleEvent,
+		// Events were lost, and a run or a requested compaction may have ended
+		// among them. Assume so: the alternative is to take every later prompt
+		// for a correction, or to wait for a compaction that is long over.
+		() => {
+			for (const loaded of sessions.values()) {
+				void loaded.then((runtime) =>
+					withLock(runtime, async () => {
+						runtime.busy = false;
+						runtime.observed = undefined;
+						runtime.selected = undefined;
+					}),
+				);
+			}
+		},
+	);
 }
 
 export { tokenEstimate };

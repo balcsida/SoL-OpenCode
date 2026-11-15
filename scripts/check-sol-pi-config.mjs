@@ -54,7 +54,7 @@ function readConfig(path) {
 		fail(`unable to read config ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	try {
-		return JSON.parse(text);
+		return JSON.parse(text.replace(/^\uFEFF/, ""));
 	} catch (error) {
 		fail(`invalid JSON in config ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}

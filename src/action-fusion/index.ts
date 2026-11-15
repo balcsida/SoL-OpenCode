@@ -25,6 +25,7 @@
 
 import type { SolPiConfig } from "../config.ts";
 import type { RequestHookEvent, SolContext, ToolError, ToolExecuteAfter, ToolExecuteBefore } from "../context.ts";
+import { failOpen, subscribeSessionEvents } from "../hooks.ts";
 import type { ReportSaving } from "../savings.ts";
 import { acquireFusedFileQueue, resolveToolPath } from "./file-queue.ts";
 import {
@@ -49,12 +50,24 @@ const THEN_RUN_DESCRIPTIONS: Record<(typeof FUSED_TOOLS)[number], string> = {
 	write: "Command to run next on this file after the write succeeds — e.g. run, build, start/restart, install, or check it; optional timeout in milliseconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.",
 };
 
+/**
+ * How long a mutation waits for the fused queue of its file when the holder
+ * is not running a command. Past it the mutation runs unqueued, as it would
+ * without Action Fusion, so a slot whose holder never released it cannot
+ * stall the file for good.
+ */
+export const QUEUE_WAIT_LIMIT_MS = 5 * 60_000;
+
 interface PendingCall {
 	readonly sessionID: string;
 	readonly absolutePath: string | undefined;
-	readonly thenRun: ParsedThenRun | undefined;
-	readonly release: () => void;
+	/** The agent's latest primary request offered it the shell tool. */
+	readonly shellOffered: boolean;
 	readonly abort: AbortController;
+	thenRun: ParsedThenRun | undefined;
+	/** Its command has started, so the slot it holds is in use, not lost. */
+	running: boolean;
+	release: () => void;
 }
 
 function isFusedTool(name: string): name is (typeof FUSED_TOOLS)[number] {
@@ -65,54 +78,108 @@ function callKey(event: { readonly sessionID: string; readonly id: string }): st
 	return `${event.sessionID}\0${event.id}`;
 }
 
-export async function register(ctx: SolContext, _config: SolPiConfig, report: ReportSaving = () => {}): Promise<() => void> {
+function agentKey(event: { readonly sessionID: string; readonly agent: string }): string {
+	return `${event.sessionID}\0${event.agent}`;
+}
+
+/** Resolves with nothing once `signal` aborts or `limitMs` passes. */
+function gaveUp(signal: AbortSignal, limitMs: number): Promise<undefined> {
+	const either = AbortSignal.any([signal, AbortSignal.timeout(limitMs)]);
+	return new Promise((resolve) => {
+		if (either.aborted) resolve(undefined);
+		else either.addEventListener("abort", () => resolve(undefined), { once: true });
+	});
+}
+
+export async function register(
+	ctx: SolContext,
+	_config: SolPiConfig,
+	report: ReportSaving = () => {},
+	queueWaitLimitMs = QUEUE_WAIT_LIMIT_MS,
+): Promise<() => void> {
 	const pending = new Map<string, PendingCall>();
+	/**
+	 * Session and agent pairs whose latest primary request offered the shell
+	 * tool. OpenCode enforces an agent's tool set on the tools it offers
+	 * (core/src/tool.ts `whollyDisabled`), and the shell tool asserts
+	 * permission only for commands its parser recognizes, so a command handed
+	 * to it directly must not run for an agent that was never offered it.
+	 */
+	const shellOffered = new Set<string>();
 
 	const advertise = (event: RequestHookEvent): void => {
+		if (!event.tools[SHELL_TOOL]) return;
 		for (const name of FUSED_TOOLS) {
 			const tool = event.tools[name];
 			if (tool) event.tools[name] = { ...tool, input: withThenRun(tool.input, THEN_RUN_DESCRIPTIONS[name]) };
 		}
 	};
+	await ctx.session.hook(
+		"context",
+		failOpen("actionfusion context hook", (event) => {
+			// Only the agent loop's own requests lead to tool calls.
+			if (event.tools[SHELL_TOOL]) shellOffered.add(agentKey(event));
+			else shellOffered.delete(agentKey(event));
+			advertise(event);
+		}),
+	);
 	// The same tools on every request kind keep the provider's cached prefix stable.
-	await ctx.session.hook("context", advertise);
-	await ctx.session.hook("generate", advertise);
-	await ctx.session.hook("compaction", advertise);
+	await ctx.session.hook("generate", failOpen("actionfusion generate hook", advertise));
+	await ctx.session.hook("compaction", failOpen("actionfusion compaction hook", advertise));
 
-	await ctx.tool.hook("execute.before", async (event) => {
-		const before = event as ToolExecuteBefore;
-		if (!isFusedTool(before.tool)) return;
-		const input = before.input;
-		if (typeof input !== "object" || input === null || Array.isArray(input)) return;
+	await ctx.tool.hook(
+		"execute.before",
+		failOpen("actionfusion execute.before", async (event) => {
+			const before = event as ToolExecuteBefore;
+			if (!isFusedTool(before.tool)) return;
+			const input = before.input;
+			if (typeof input !== "object" || input === null || Array.isArray(input)) return;
+			const path = (input as { path?: unknown }).path;
+			const call: PendingCall = {
+				sessionID: before.sessionID,
+				absolutePath: typeof path === "string" ? toolPath(ctx.location.directory, path) : undefined,
+				shellOffered: shellOffered.has(agentKey(before)),
+				abort: new AbortController(),
+				thenRun: undefined,
+				running: false,
+				release: () => {},
+			};
+			// Tracked before the first wait, so a session that ends meanwhile cancels
+			// the call instead of leaving it a slot nothing would release.
+			pending.set(callKey(before), call);
 
-		let requested: unknown;
-		if (Object.hasOwn(input, "then_run")) {
-			const { then_run, ...rest } = input as Record<string, unknown>;
-			before.input = rest;
-			requested = then_run;
-		} else {
-			// OpenCode's built-in input-repair hook runs first and drops keys a
-			// closed schema does not declare, so read the raw call input it
-			// recorded durably before execution.
-			requested = await recordedThenRun(ctx, before.sessionID, before.id);
-		}
-		const thenRun = requested === undefined || requested === null ? undefined : parseThenRun(requested);
+			let requested: unknown;
+			if (Object.hasOwn(input, "then_run")) {
+				const { then_run, ...rest } = input as Record<string, unknown>;
+				before.input = rest;
+				requested = then_run;
+			} else if (call.shellOffered) {
+				// OpenCode's built-in input-repair hook runs first and drops keys a
+				// closed schema does not declare, so read the raw call input it
+				// recorded durably before execution. Without the shell tool no
+				// then_run was advertised, so there is nothing to look up.
+				requested = await recordedThenRun(ctx, before.sessionID, before.id);
+			}
+			if (requested !== undefined && requested !== null) call.thenRun = parseThenRun(requested);
+			if (!call.absolutePath || call.abort.signal.aborted) return;
 
-		const path = (input as { path?: unknown }).path;
-		const absolutePath = typeof path === "string" ? resolveToolPath(ctx.location.directory, path) : undefined;
-		// Every edit/write takes the fused queue, as in SoL-Pi, so a plain
-		// mutation of the same file waits for a running then_run command.
-		const release = absolutePath ? await acquireFusedFileQueue(absolutePath) : () => {};
-		pending.set(callKey(before), {
-			sessionID: before.sessionID,
-			absolutePath,
-			thenRun,
-			release,
-			abort: new AbortController(),
-		});
-	});
+			// Every edit/write takes the fused queue, as in SoL-Pi, so a plain
+			// mutation of the same file waits for a running then_run command.
+			const { absolutePath } = call;
+			const slot = acquireFusedFileQueue(absolutePath);
+			const commandRunning = () => [...pending.values()].some((other) => other.running && other.absolutePath === absolutePath);
+			let release: (() => void) | undefined;
+			do {
+				release = await Promise.race([slot, gaveUp(call.abort.signal, queueWaitLimitMs)]);
+				// Past the limit a holder whose command still runs is slow, not lost.
+			} while (!release && !call.abort.signal.aborted && commandRunning());
+			if (release && !call.abort.signal.aborted) call.release = release;
+			// Cancelled or out of patience: pass the slot on as soon as it comes up.
+			else void slot.then((late) => late()).catch(() => {});
+		}),
+	);
 
-	await ctx.tool.hook("execute.after", async (event) => {
+	await ctx.tool.hook("execute.after", failOpen("actionfusion execute.after", async (event) => {
 		const after = event as ToolExecuteAfter;
 		const key = callKey(after);
 		const call = pending.get(key);
@@ -123,6 +190,7 @@ export async function register(ctx: SolContext, _config: SolPiConfig, report: Re
 				after.error = withMessage(after.error, `${after.error.message}\n\n${MUTATION_FAILED_SKIP}`);
 				return;
 			}
+			call.running = true;
 			const outcome = await fusedOutcome(ctx, after, call);
 			const content = after.result.content;
 			const base = content === undefined ? [] : typeof content === "string" ? [{ type: "text" as const, text: content }] : [...content];
@@ -147,32 +215,29 @@ export async function register(ctx: SolContext, _config: SolPiConfig, report: Re
 			if (pending.get(key) === call) pending.delete(key);
 			call.release();
 		}
-	});
+	}));
 
-	// A tool call that is interrupted, or dies before execute.after, must not
-	// hold the queue or keep its command running.
-	const releaseSession = (sessionID: string): void => {
-		for (const [key, call] of pending) {
-			if (call.sessionID !== sessionID) continue;
-			call.abort.abort();
-			call.release();
-			pending.delete(key);
-		}
-	};
-	const subscription = new AbortController();
-	void (async () => {
-		for await (const event of ctx.event.subscribe({ signal: subscription.signal })) {
-			const type = (event as { type?: string }).type;
-			const sessionID = (event as { data?: { sessionID?: unknown } }).data?.sessionID;
-			if (typeof sessionID !== "string") continue;
-			if (type === "session.execution.interrupted" || type === "session.idle" || type === "session.deleted") {
-				releaseSession(sessionID);
+	// OpenCode runs execute.after only for a call that completed or failed with
+	// a tool error. One that is interrupted or declined never gets there, and
+	// must not hold the queue or keep its command running.
+	const unsubscribe = subscribeSessionEvents(
+		ctx,
+		"actionfusion",
+		["session.execution.interrupted", "session.execution.failed", "session.idle", "session.deleted"],
+		(type, sessionID) => {
+			for (const [key, call] of pending) {
+				if (call.sessionID !== sessionID) continue;
+				call.abort.abort();
+				call.release();
+				pending.delete(key);
 			}
-		}
-	})().catch((error: unknown) => console.error(`[actionfusion] event subscription ended: ${errorText(error)}`));
+			if (type !== "session.deleted") return;
+			for (const key of shellOffered) if (key.startsWith(`${sessionID}\0`)) shellOffered.delete(key);
+		},
+	);
 
 	return () => {
-		subscription.abort();
+		void unsubscribe();
 		for (const call of pending.values()) {
 			call.abort.abort();
 			call.release();
@@ -187,35 +252,43 @@ export async function register(ctx: SolContext, _config: SolPiConfig, report: Re
  * assistant message is searched first. Any lookup failure means no command.
  */
 async function recordedThenRun(ctx: SolContext, sessionID: string, callID: string): Promise<unknown> {
-	let history: readonly unknown[];
 	try {
-		history = await ctx.session.context({ sessionID } as Parameters<SolContext["session"]["context"]>[0]);
+		const history = await ctx.session.context({ sessionID } as Parameters<SolContext["session"]["context"]>[0]);
+		for (let index = history.length - 1; index >= 0; index--) {
+			const message = history[index] as { type?: unknown; content?: unknown } | null;
+			if (message?.type !== "assistant" || !Array.isArray(message.content)) continue;
+			for (const item of message.content as ({ type?: unknown; id?: unknown; state?: { input?: unknown } } | null)[]) {
+				if (item?.type !== "tool" || item.id !== callID) continue;
+				const recorded = typeof item.state?.input === "string" ? JSON.parse(item.state.input) : item.state?.input;
+				return typeof recorded === "object" && recorded !== null && Object.hasOwn(recorded, "then_run")
+					? (recorded as { then_run?: unknown }).then_run
+					: undefined;
+			}
+		}
 	} catch (error) {
 		console.error(`[actionfusion] could not read the recorded tool input: ${errorText(error)}`);
-		return undefined;
-	}
-	for (let index = history.length - 1; index >= 0; index--) {
-		const message = history[index] as { type?: unknown; content?: unknown };
-		if (message.type !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const item of message.content as { type?: unknown; id?: unknown; state?: { input?: unknown } }[]) {
-			if (item.type !== "tool" || item.id !== callID) continue;
-			let recorded = item.state?.input;
-			if (typeof recorded === "string") {
-				try {
-					recorded = JSON.parse(recorded);
-				} catch {
-					return undefined;
-				}
-			}
-			return typeof recorded === "object" && recorded !== null ? (recorded as { then_run?: unknown }).then_run : undefined;
-		}
 	}
 	return undefined;
+}
+
+/** The mutation target, or nothing when it cannot be resolved: the command is then skipped, not the mutation. */
+function toolPath(directory: string, path: string): string | undefined {
+	try {
+		return resolveToolPath(directory, path);
+	} catch {
+		return undefined;
+	}
 }
 
 async function fusedOutcome(ctx: SolContext, after: ToolExecuteAfter, call: PendingCall): Promise<CommandOutcome> {
 	const thenRun = call.thenRun;
 	if (!thenRun) throw new Error("fusedOutcome requires then_run");
+	if (!call.shellOffered) {
+		return {
+			status: "skipped",
+			text: `${THEN_RUN_SKIPPED} the shell tool is not available to this agent; the command was not run.`,
+		};
+	}
 	if (!thenRun.ok) {
 		return { status: "skipped", text: `${THEN_RUN_SKIPPED} invalid then_run: ${thenRun.reason}; the command was not run.` };
 	}
@@ -237,11 +310,11 @@ async function runCommand(
 	after: ToolExecuteAfter,
 	signal: AbortSignal,
 ): Promise<CommandOutcome> {
-	const shell = (await ctx.tool.list()).find((tool) => tool.id === SHELL_TOOL);
-	if (!shell) {
-		return { status: "skipped", text: `${THEN_RUN_SKIPPED} the shell tool is unavailable; the command was not run.` };
-	}
 	try {
+		const shell = (await ctx.tool.list()).find((tool) => tool.id === SHELL_TOOL);
+		if (!shell) {
+			return { status: "skipped", text: `${THEN_RUN_SKIPPED} the shell tool is unavailable; the command was not run.` };
+		}
 		const result = await shell.execute(
 			{ command: thenRun.command, ...(thenRun.timeout === undefined ? {} : { timeout: thenRun.timeout }) },
 			// The ids are OpenCode's own branded values from the hook event.
@@ -256,6 +329,10 @@ async function runCommand(
 		);
 		return commandOutcome(result);
 	} catch (error) {
+		// The user's plain "no" to the permission prompt (core/src/permission.ts `DeclinedError`).
+		if ((error as { _tag?: unknown } | null)?._tag === "Permission.DeclinedError") {
+			return { status: "skipped", text: `${THEN_RUN_SKIPPED} the user declined the command; it was not run.` };
+		}
 		return { status: "failed", text: errorText(error) };
 	}
 }

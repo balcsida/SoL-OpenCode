@@ -19,13 +19,15 @@
  * already cached instead of resending every archived observation.
  */
 
+import { rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SolPiConfig } from "../config.ts";
-import type { ContextHookEvent, LLMContentPart, SolContext, ToolResult } from "../context.ts";
+import type { Cleanup, ContextHookEvent, LLMContentPart, SolContext, ToolResult } from "../context.ts";
+import { failOpen, subscribeSessionEvents } from "../hooks.ts";
 import { createLedger, type Ledger } from "../ledger.ts";
 import { isToolResultPart, toolResultText, withContent, withToolResultText } from "../messages.ts";
 import { sessionRoot } from "../paths.ts";
-import { errorMessage, recallPage, toolFailure } from "../recall.ts";
+import { errorMessage, failureReason, recallPage, toolFailure } from "../recall.ts";
 import { formatSavingsCount, type ReportSaving } from "../savings.ts";
 import {
 	createObservation,
@@ -49,7 +51,7 @@ const RECALL_INPUT = {
 	additionalProperties: false,
 } as const;
 
-export async function register(ctx: SolContext, _config: SolPiConfig, report: ReportSaving = () => {}): Promise<void> {
+export async function register(ctx: SolContext, _config: SolPiConfig, report: ReportSaving = () => {}): Promise<Cleanup> {
 	const sentCounts = new Map<string, number>();
 	const ledgers = new Map<string, Ledger>();
 	const ledgerFor = (root: string): Ledger => {
@@ -77,8 +79,19 @@ export async function register(ctx: SolContext, _config: SolPiConfig, report: Re
 	});
 
 	const project = (event: ContextHookEvent) => projectObservations(event, sentCounts, ledgerFor, report);
-	await ctx.session.hook("context", project);
-	await ctx.session.hook("compaction", project);
+	await ctx.session.hook("context", failOpen("observationpack context hook", project));
+	await ctx.session.hook("compaction", failOpen("observationpack compaction hook", project));
+
+	// A deleted session takes its archived tool results with it.
+	return subscribeSessionEvents(ctx, "observationpack", ["session.deleted"], async (type, sessionID) => {
+		if (type !== "session.deleted") return;
+		const root = sessionRoot(sessionID);
+		ledgers.delete(root);
+		for (const key of sentCounts.keys()) if (key.startsWith(`${root}\0`)) sentCounts.delete(key);
+		await rm(join(root, "observation-pack"), { recursive: true, force: true });
+		// The session root goes too once no other mechanism keeps anything in it.
+		await rmdir(root).catch(() => {});
+	});
 }
 
 async function recall(
@@ -92,11 +105,15 @@ async function recall(
 		const root = sessionRoot(sessionID);
 		const recalled = await recallPage(RECALL_TOOL, id, observationPath(root, id), offset);
 		if (!recalled) return toolFailure(`Unknown observation id: ${id}`);
-		await ledgerFor(root)({ event: "recall", ...recalled.page });
+		// The ledger is bookkeeping: failing to append must not cost the agent the page it read.
+		await ledgerFor(root)({ event: "recall", ...recalled.page }).catch((error: unknown) =>
+			console.error(`[observationpack] recall ledger entry failed: ${errorMessage(error)}`),
+		);
 		return { content: recalled.text, metadata: { ...recalled.page } };
 	} catch (error) {
-		// Fail closed: an unreadable or tampered object is never returned.
-		return toolFailure(`obs_recall failed for ${id}: ${errorMessage(error)}`, {
+		// Fail closed: an object that cannot be read as a regular file is never returned.
+		console.error(`[observationpack] obs_recall failed for ${id}: ${errorMessage(error)}`);
+		return toolFailure(`obs_recall failed for ${id}: ${failureReason(error)}`, {
 			code: error instanceof Error && "code" in error ? error.code : undefined,
 		});
 	}

@@ -19,17 +19,19 @@
  * come from the session.
  */
 
+import { rm, rmdir } from "node:fs/promises";
 import type { SolPiConfig } from "../config.ts";
-import type { GenerateApi, SolContext, ToolExecuteAfter, ToolResult } from "../context.ts";
+import type { Cleanup, GenerateApi, SolContext, ToolExecuteAfter, ToolResult } from "../context.ts";
+import { failOpen, subscribeSessionEvents } from "../hooks.ts";
 import { openCodeShellOutputDirectory, sessionRoot } from "../paths.ts";
-import { errorMessage, recallPage, toolFailure } from "../recall.ts";
+import { errorMessage, failureReason, recallPage, toolFailure } from "../recall.ts";
 import { formatSavingsBytes, type ReportSaving } from "../savings.ts";
 import { archiveBody, archivePath, archiveRoot, isSourceHash } from "./archive.ts";
 import { type CompletedToolCall, reducibleToolResult } from "./candidate.ts";
 import {
+	containsLikelySecret,
 	DIAGNOSTIC_COMMAND,
 	isRecord,
-	LIKELY_SECRET,
 	loadReducerConfig,
 	REDUCER_RECEIPT_SCHEMA,
 	type ReducerConfig,
@@ -44,7 +46,15 @@ export interface ReducerDependencies {
 	readonly generate: GenerateApi;
 	readonly shellOutputDirectory: string;
 	readonly report: ReportSaving;
+	/** OpenCode has no such reducer model, so the next call would fail the same way. */
+	readonly onModelUnavailable?: (message: string) => void;
 }
+
+/** How long reduction stays off after OpenCode could not select the reducer model. */
+const MODEL_RETRY_MS = 10 * 60_000;
+
+/** A UTF-16 code unit is at most three bytes of UTF-8, so a file past this is past `maxChars` too. */
+const MAX_UTF8_BYTES_PER_CHAR = 3;
 
 function errorName(error: unknown): string | undefined {
 	return isRecord(error) && typeof error.name === "string" ? error.name : undefined;
@@ -57,15 +67,20 @@ export async function reduceToolResult(
 	call: CompletedToolCall & { readonly id: string; readonly sessionID: string },
 	dependencies: ReducerDependencies,
 ): Promise<ToolResult | undefined> {
-	const reducible = await reducibleToolResult(call, dependencies.shellOutputDirectory);
+	const reducible = await reducibleToolResult(
+		call,
+		dependencies.shellOutputDirectory,
+		config.maxChars * MAX_UTF8_BYTES_PER_CHAR,
+	);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
-	const { body, command, isError } = reducible;
-	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
-	if (body.length > config.maxChars) {
-		await journal("fallback", { reason: "source-over-max-chars", sourceChars: body.length, maxChars: config.maxChars });
+	const { command, isError } = reducible;
+	const body = await reducible.readBody();
+	if (body === undefined || body.length > config.maxChars) {
+		await journal("fallback", { reason: "source-over-max-chars", sourceChars: body?.length, maxChars: config.maxChars });
 		return undefined;
 	}
-	if (LIKELY_SECRET.test(body)) {
+	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
+	if (containsLikelySecret(body)) {
 		await journal("fallback", { reason: "likely-secret" });
 		return undefined;
 	}
@@ -97,6 +112,7 @@ export async function reduceToolResult(
 						: "model-call-exception",
 			errorMessage: errorMessage(error),
 		});
+		if (name === "ReducerModelUnavailableError") dependencies.onModelUnavailable?.(errorMessage(error));
 		return undefined;
 	}
 
@@ -192,7 +208,7 @@ export async function register(
 	config: SolPiConfig,
 	options: Pick<ReducerConfigOptions, "timeoutMs"> = {},
 	report: ReportSaving = () => {},
-): Promise<void> {
+): Promise<Cleanup> {
 	const reducerOptions: ReducerConfigOptions = {
 		reducerModel: config.evidencePreservingReducerModel,
 		reducerProvider: config.evidencePreservingReducerProvider,
@@ -218,7 +234,7 @@ export async function register(
 				"Read the archived original of a log that an evidence receipt reduced, by source_sha256 and byte offset. Use it when exact context beyond the receipt's verified quotes is needed; continue with the returned next_offset.",
 			input: RECALL_INPUT,
 			execute: async (input, context) => {
-				const { source_sha256: hash, offset = 0 } = input as { source_sha256: string; offset?: number };
+				const { source_sha256: hash, offset = 0 } = input as { source_sha256: unknown; offset?: number };
 				if (!isSourceHash(hash)) return toolFailure(`Unknown evidence source: ${hash}`);
 				try {
 					const root = archiveRoot(stateFor(sessionRoot(context.sessionID)).config);
@@ -226,20 +242,27 @@ export async function register(
 					if (!recalled) return toolFailure(`Unknown evidence source: ${hash}`);
 					return { content: recalled.text, metadata: { ...recalled.page } };
 				} catch (error) {
-					return toolFailure(`${RECALL_TOOL} failed for ${hash}: ${errorMessage(error)}`);
+					console.error(`[evidence-preserving-reducer] ${RECALL_TOOL} failed for ${hash}: ${errorMessage(error)}`);
+					return toolFailure(`${RECALL_TOOL} failed for ${hash}: ${failureReason(error)}`);
 				}
 			},
 		});
 	});
 
+	let retryModelAt = 0;
 	const dependencies: ReducerDependencies = {
 		generate: ctx.experimental.generate,
 		shellOutputDirectory: openCodeShellOutputDirectory(ctx.location.project.id),
 		report,
+		onModelUnavailable: (message) => {
+			// Said where the user can find it, instead of archiving and sending every later log for nothing.
+			retryModelAt = Date.now() + MODEL_RETRY_MS;
+			console.error(`[evidence-preserving-reducer] ${message}. No log is reduced for the next ${MODEL_RETRY_MS / 60_000} minutes.`);
+		},
 	};
-	await ctx.tool.hook("execute.after", async (event) => {
+	await ctx.tool.hook("execute.after", failOpen("evidence-preserving-reducer execute.after", async (event) => {
 		const after = event as ToolExecuteAfter;
-		if (after.status !== "completed") return;
+		if (after.status !== "completed" || Date.now() < retryModelAt) return;
 		let root: string;
 		try {
 			root = sessionRoot(after.sessionID);
@@ -254,6 +277,16 @@ export async function register(
 			// Fail open: any reducer failure leaves the original result unchanged.
 			await state.journal("fallback", { toolCallId: after.id, reason: "reducer-exception", errorMessage: errorMessage(error) });
 		}
+	}));
+
+	// A deleted session takes its archived logs and its journal with it.
+	return subscribeSessionEvents(ctx, "evidence-preserving-reducer", ["session.deleted"], async (type, sessionID) => {
+		if (type !== "session.deleted") return;
+		const root = sessionRoot(sessionID);
+		states.delete(root);
+		await rm(loadReducerConfig(root).storeRoot, { recursive: true, force: true });
+		// The session root goes too once no other mechanism keeps anything in it.
+		await rmdir(root).catch(() => {});
 	});
 }
 

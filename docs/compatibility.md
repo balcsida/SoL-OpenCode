@@ -29,7 +29,7 @@ SoL-OpenCode is a Promise plugin: `Plugin.define({ id: "sol-opencode", setup })`
 | `ctx.experimental.generate.text` | Reducer | the reducer call |
 | `ctx.model.list` | Online Context Compact | the context window |
 | `ctx.storage` | Online Context Compact | per-session state |
-| `ctx.event.subscribe` | Action Fusion, Online Context Compact | `session.step.ended`, `session.execution.*`, `session.idle`, `session.compaction.ended`, `session.compaction.failed`, `session.revert.committed`, `session.deleted` |
+| `ctx.event.subscribe` | All four | `session.step.ended`, `session.execution.*`, `session.idle`, `session.compaction.ended`, `session.compaction.failed`, `session.revert.committed`, `session.deleted` |
 
 **Experimental status:** `ctx.experimental.generate.text` sits under the experimental namespace. It replaced `ctx.generate.text`, which 2.2 deprecates and removes in the next minor. Nothing else used here is marked experimental; the `experimental.ws.*` hooks, `experimental.idle`, and `ctx.experimental.terminal` are not used.
 
@@ -63,10 +63,10 @@ In SoL-Pi these threw.
 
 The built-in `edit` and `write` tools are not replaced; wrapping their executors from a Promise plugin would turn their typed failures into defects. Action Fusion works in four steps:
 
-1. **Advertise.** The `context`, `generate`, and `compaction` hooks add an optional `then_run` object to the live `edit`/`write` JSON schemas. OpenCode matches a replaced definition back by key (`core/src/session/model-request.ts:302`). Every provider protocol sends tool schemas with `strict: false`.
+1. **Advertise.** The `context`, `generate`, and `compaction` hooks add an optional `then_run` object to the live `edit`/`write` JSON schemas, but only in a request that also offers the `shell` tool. An agent without `shell` is neither offered `then_run` nor has one run: OpenCode enforces an agent's tool set on the tools it offers, and a command handed to the `shell` tool directly would get past that. OpenCode matches a replaced definition back by key (`core/src/session/model-request.ts:302`). Every provider protocol sends tool schemas with `strict: false`.
 2. **Take the queue.** `execute.before` removes `then_run` from the input if it is still there. The input-repair hook usually dropped it already; in that case the plugin reads `then_run` from the recorded call via `ctx.session.context()`. It then takes SoL's per-file queue before the built-in mutation runs.
 3. **Run the command.** `execute.after` checks that the file is unchanged and runs the command through OpenCode's own `shell` tool, so OpenCode's shell selection, permissions, `ctx.shell.hook("create.before")`, and output limits all apply. It appends the result and records `metadata.thenRun: { status, command, exit, truncated }`.
-4. **Release.** The queue slot is released after the command. If `execute.after` never runs, the slot is released and the running command aborted on `session.execution.interrupted`, `session.idle`, or `session.deleted`.
+4. **Release.** The queue slot is released after the command. OpenCode runs `execute.after` only for a call that completed or failed with a tool error, so for an interrupted or declined call the slot is released, and a running command aborted, on `session.execution.interrupted`, `session.execution.failed`, `session.idle`, or `session.deleted`. A mutation waits five minutes for a slot, longer only while the holder's command is still running, and then runs unqueued.
 
 Differences from SoL-Pi:
 
@@ -74,7 +74,7 @@ Differences from SoL-Pi:
 - A command that exits non-zero, times out, or is killed leaves the call `completed`, with a `[then_run:failed]` marker and the exit status. `execute.after` cannot change a call's status. Pi reported the fused call as an error. A failed mutation is still a typed error, now ending with `[then_run:skipped] …`.
 - Paths resolve exactly as OpenCode's built-ins resolve them. There is no `@` stripping, `file://` decoding, or Unicode-space normalization, because OpenCode does none.
 - A plain `edit`/`write` of a file waits for a running fused command on that file, as in SoL-Pi. Mutations by other tools, other plugins, or external processes are not locked. The hash guard still skips the command if the file changes between mutation and command.
-- The fused command runs with the edit/write call's identity. A permission prompt for the command is therefore attributed to that call.
+- The fused command runs with the edit/write call's identity. A permission prompt for the command is therefore attributed to that call. A declined prompt leaves the mutation in place and is reported as `[then_run:skipped]`.
 
 ## ObservationPack
 
@@ -92,14 +92,14 @@ It keeps the result kind (`text` or `content`) and any other part fields.
 Differences from SoL-Pi:
 
 - OpenCode truncates tool output itself before a result reaches the request (2,000 lines / 50 KiB). Such results are archived as the truncated text OpenCode recorded; OpenCode keeps the full output in its own files.
-- Archives live under `<OpenCode data>/sol-opencode/<sessionID>/observation-pack/` rather than a Pi session directory.
+- Archives live under `<OpenCode data>/sol-opencode/<sessionID>/observation-pack/` rather than a Pi session directory. They are removed on `session.deleted`.
 - SoL-Pi's "money saved" notification is ported as a toast by the TUI companion (`tui.tsx`); the status line is ported as a sidebar section; tool-call rendering is not. The ledger records every saving.
 
 ## Evidence-Preserving Reducer
 
 An `execute.after` hook handles completed foreground `shell` results and fused `edit`/`write` results. The reducer route (`evidencePreservingReducerProvider`/`Model`, default `openai/gpt-5.6-luna`) goes through `ctx.experimental.generate.text`, so OpenCode resolves the model and its credentials.
 
-As in SoL-Pi, a verified receipt becomes the tool result that OpenCode records. The original is archived under `<OpenCode data>/sol-opencode/<sessionID>/evidence-preserving-reducer/` and stays readable with `evidence_recall`. Every failure leaves the original result unchanged.
+As in SoL-Pi, a verified receipt becomes the tool result that OpenCode records. The original is archived under `<OpenCode data>/sol-opencode/<sessionID>/evidence-preserving-reducer/` and stays readable with `evidence_recall` until `session.deleted` removes it. Every failure leaves the original result unchanged.
 
 Differences from SoL-Pi:
 
@@ -110,6 +110,8 @@ Differences from SoL-Pi:
 - **Timeout.** `ctx.experimental.generate.text` offers no cancellation, because the plugin adapter drops request options. On timeout the original result goes back to the agent, but the provider call runs to completion.
 - **Readback.** Receipts point readback at `evidence_recall`. Reading the archive with `read`/`shell` would trigger OpenCode's `external_directory` approval.
 - **Journal.** Decisions go to `journal.jsonl` beside the archive. OpenCode has no plugin-writable, non-context session log.
+- **Credential check.** SoL-Pi's keyword rule is kept. The port adds quoted password values, assignments in environment dumps, connection strings, query strings, and command lines, credentials in a URL, private key blocks, and common token formats.
+- **Unavailable model.** When OpenCode cannot select the reducer model, the mechanism says so and neither archives nor sends a log for the next ten minutes.
 
 ## Online Context Compact
 
@@ -118,7 +120,7 @@ OpenCode 2.1 added `compact` to the plugin `SessionDomain`, so Online Context Co
 1. **Plan.** `update_plan` records the plan. A previously registered unfinished step that becomes completed is a boundary. A completed step that appears under a new id is recorded as history, not progress, so a plan re-stated or re-keyed after compaction does not retrigger it. The plan survives compaction, as in SoL-Pi.
 2. **Decide.** The boundary is decided in the same `update_plan` call, SoL-Pi's `turn_end`: the request that produced the call has already been counted and observed. SoL-Pi's `decideCompaction` gate runs unchanged on the last request the `context` hook saw (registered after ObservationPack, so placeholders count at their size), with `cacheWriteReadRatio`, the retained tail (20,000 tokens, SoL-Pi's default), the window from `ctx.model.list()`, and the request size. Economic compaction waits two provider requests after any compaction; window protection overrides that cooldown. A boundary before any observed request, or while a requested compaction is still pending, is left undecided.
 3. **Request.** A selected boundary calls `ctx.session.compact({ sessionID, delivery: "steer" })`, then `ctx.session.synthetic` with the plan reminder, also steered. OpenCode runs the compaction before the running session's next model step and admits the reminder as a user message right after the checkpoint (`core/src/session/runner/llm.ts`). The summary is OpenCode's own: its template, its model call, and its retained tail (`metadata.keepID`), sized by OpenCode's `keep` budget. The port prices the removable prefix at SoL-Pi's retained tail, because the host's split is not exposed.
-4. **Account.** `session.compaction.ended` with `reason: "manual"` while a request is pending is this mechanism's compaction: it carries SoL's cache debt, and the saving (the priced prefix minus the summary) is reported. Any other compaction, OpenCode's threshold or a user's `/compact`, counts with no debt. `session.compaction.failed` clears the pending request, so a later boundary can ask again.
+4. **Account.** `session.compaction.ended` with `reason: "manual"` while a request is pending is this mechanism's compaction: it carries SoL's cache debt, and the saving (the priced prefix minus the summary) is reported. Any other compaction, OpenCode's threshold or a user's `/compact`, counts with no debt. `session.compaction.failed` clears the pending request.
 
 Consequences, compared with SoL-Pi:
 
@@ -126,7 +128,7 @@ Consequences, compared with SoL-Pi:
 - **Summary request.** OpenCode sends the conversation to summarize unchanged when the window fits it, with the system prompt and tools of the primary request. With ObservationPack enabled, its leading messages are byte for byte the previous agent request (the live run checks this), so the provider's prompt cache covers them. SoL-Pi's `customInstructions` are not passed: a plugin could only prepend them to the system prompt, which would break that cache, and OpenCode's template already keeps decisions, work state, and next moves.
 - **Checkpoint.** The summary and the retained tail become one checkpoint user message, and history starts from it (OpenCode 2.2). The retained tail is kept as text, not as messages. `obs_recall` and `evidence_recall` keep working, because the archives outlive the compaction.
 - **Request accounting.** The request that leads to the boundary is counted at its pre-compaction size before the decision, as SoL-Pi's `before_provider_request` precedes its `turn_end` decision, and the compaction clears the size baseline. Cache debt accumulates across compactions and is charged on the post-compaction context. A new prompt after a fully completed plan resets the request-horizon samples and keeps unpaid debt.
-- **Failure.** If `compact` rejects, nothing changes and the decision is recorded with `requested: false`. A compaction OpenCode starts and then fails ends the run with `session.compaction.failed`, as a failed `/compact` would. The gate therefore never requests one without a cut point, which rules out OpenCode's only refusal (`Nothing to compact`). SoL-Pi's recoverable refusals and its retry block have no counterpart.
+- **Failure.** If `compact` rejects, nothing changes and the decision is recorded with `requested: false`. A compaction OpenCode starts and then fails ends the run with `session.compaction.failed`, as a failed `/compact` would. The gate therefore never requests one without a cut point, which rules out OpenCode's only refusal (`Nothing to compact`). SoL-Pi's recoverable refusals and its retry block have no counterpart. Because a failure ends the run, no further compaction is requested for that session until OpenCode compacts it, by its threshold or a user's `/compact`.
 - **Visibility.** OpenCode shows the compaction as it shows `/compact`; the TUI companion toasts the saving as well.
 - **Corrections and reverts.** `session.revert.committed` resets the plan, like a correction. A prompt that starts with `CORRECTION:`, or a steering prompt sent while the session is running, is a correction. OpenCode delivers every prompt as `"steer"` by default, so a steer counts only while the session is busy.
 - **Forks.** A forked session starts with no state of its own.
