@@ -1,6 +1,6 @@
 {
 	"name": "@balcsida/sol-opencode",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "SoL-Pi's four token-efficiency mechanisms as an OpenCode v2 plugin",
 	"repository": {
 		"type": "git",
