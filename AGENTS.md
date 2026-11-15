@@ -9,5 +9,5 @@ SoL-OpenCode ports SoL-Pi's four efficiency mechanisms to an OpenCode v2 plugin.
 - Model calls go through OpenCode (`ctx.experimental.generate.text`, `ctx.session.compact`), never a direct provider call.
 - Tests are zero-spend: drive mechanisms through `tests/fake-opencode.ts`, with no real provider calls.
 - Run `npm run check` (type check and tests) before committing. Stop on failure; do not hide it.
-- For changes that touch hooks or tools, also run `scripts/live/verify.sh af-op` and `scripts/live/verify.sh all` (real OpenCode sessions, scripted local endpoint, zero spend) when `opencode` is installed.
+- For changes that touch hooks or tools, also run `scripts/live/verify.sh af-op` and `scripts/live/verify.sh all` (real OpenCode sessions on the packed tarball, scripted local endpoint, zero spend). They need `opencode` on `PATH`; `PATH="$(scripts/live/opencode-cli.sh):$PATH"` fetches the pinned release. CI runs both on every pull request, and a release is published only from the tarball they passed on.
 - Never print, log, or commit a credential. Only check whether one is present.

@@ -2,7 +2,7 @@
 
 These results come from `scripts/live/verify.sh`, run on 2026-11-08 against `opencode v2.2.6` (`@opencode/cli` 2.2.6, macOS arm64, Node 26). They replace the 2.2.3 results of 2026-10-30 with the same harness. Every mechanism behaves as on 2.2.3; the request bodies OpenCode builds are about 500 bytes larger, and the failing command's output is 12 bytes shorter.
 
-Each run is one real `opencode run --standalone --auto` session in a scratch project that loads this checkout from `.opencode/plugins/`. The model is a scripted OpenAI-compatible endpoint on `127.0.0.1`, so the runs are zero-spend and deterministic. Everything else is the real OpenCode:
+Each run is one real `opencode run --standalone --auto` session in a scratch project. The script packs the plugin as `npm publish` would and loads the extracted tarball through a `plugins` entry, the way a user installs it. (The results below were recorded when the script still loaded the checkout from `.opencode/plugins/`; the requests are the same.) The model is a scripted OpenAI-compatible endpoint on `127.0.0.1`, so the runs are zero-spend and deterministic. Everything else is the real OpenCode:
 
 - the session runner and tool execution;
 - permissions, the shell, and input repair;
@@ -150,6 +150,43 @@ The journal records `candidate`, `provider_response`, and `applied`. The 12,863-
   In this run OpenCode retained no tail beside the summary. The outgoing request and the persisted history agree (request 22: two messages each), because the compaction is OpenCode's own.
 - **Request size.** The request fell from 194,507 bytes (#23) to 59,466 bytes (#25). The in-process log shows the outgoing tool results fall from 130,886 bytes to 0.
 - **Continuation.** The run continued in the same `opencode run` invocation. The model re-stated its plan with `update_plan` (no boundary, since the plan survived), then answered.
+
+## Pass or fail
+
+OpenCode exits 0 and prints nothing when a plugin fails to load: a package with one source file missing runs the whole scripted session with no mechanism active. So each run ends with `scripts/live/check.mjs`, which fails unless every enabled mechanism did its job:
+
+```text
+Checks (all):
+ok   the package has every entry point its package.json names
+ok   the write tool offers then_run
+ok   a large tool result is sent as a placeholder
+ok   the request carries less than the history keeps
+ok   the persisted history never shrinks, except at a compaction
+ok   the original is archived, and the ledger shows exactly two full sends before the placeholder
+ok   the session ran to its scripted end
+ok   update_plan is offered
+ok   the fused write wrote the file, and its failing command is reported with a verified receipt
+ok   the reducer model is asked once, and its receipt reaches the agent
+ok   the reducer journal records the applied receipt
+ok   evidence_recall returns the archived log to its end
+ok   one completed plan step makes OpenCode compact once, and the run continues from the smaller checkpoint
+```
+
+The checks test what happened, not exact byte counts, so they hold across OpenCode releases. When one fails, the script prints the end of OpenCode's and the endpoint's output, and CI keeps the run's request bodies and logs as an artifact. `scripts/live/opencode-cli.sh [version|latest]` fetches an OpenCode release from npm for them; without an argument it is the release `package.json` pins.
+
+## What gates a release
+
+`.github/workflows/verify.yml` is the one definition of "verified":
+
+- `npm run check` on Node, and the same tests on Bun 1.4.4, the Bun that OpenCode 2.2.6 embeds (the workflow fails when a new pin embeds another);
+- both live runs above, on the packed tarball, with no dependencies installed;
+- the `af-op` run again on a tarball with `src/config.ts` removed, which has to fail because the plugin is missing from the session.
+
+Three workflows call it:
+
+- **CI**, for every pull request and for `main`. Branch protection requires its `check` status.
+- **Publish to npm**, when a GitHub release is published. It also refuses a tag that does not match `version` in `package.json`, and a commit that is not on `main`. It then publishes the tarball the live runs passed on, from a job that checks out nothing and installs nothing. Run by hand, it rehearses a release: everything except the upload to npm.
+- **Newest OpenCode**, weekly, with the latest OpenCode release instead of the pinned one. GitHub mails a failed run to whoever last changed the schedule, and switches the schedule off after 60 days without activity in the repository.
 
 ## What these runs do not show
 

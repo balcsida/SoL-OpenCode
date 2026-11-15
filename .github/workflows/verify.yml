@@ -1,0 +1,112 @@
+# What "verified" means here. Pull requests, releases and the weekly run in the
+# newest OpenCode all call this workflow, so they are held to the same checks.
+name: Verify
+
+on:
+  workflow_call:
+    inputs:
+      opencode:
+        description: OpenCode release for the live checks. Empty means the one package.json pins.
+        type: string
+        default: ""
+      release:
+        description: Also require a tag that matches package.json, on a commit of main.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # The Bun that the pinned OpenCode embeds. The live job fails when a new pin embeds another.
+  BUN_VERSION: "1.4.4"
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      # OpenCode runs plugins on Bun, so the same tests have to pass there.
+      - run: bun --bun x vitest run
+
+  # Loads the packed plugin in a real OpenCode session against a scripted
+  # endpoint. No dependencies are installed: the tarball has to work as it is.
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the release check asks whether the commit is on main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: This is a release of main
+        if: inputs.release
+        run: |
+          test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Pack what npm publish would ship
+        run: echo "SOL_TARBALL=$RUNNER_TEMP/$(npm pack --silent --pack-destination "$RUNNER_TEMP")" >> "$GITHUB_ENV"
+      # Uploaded before anything else runs in this job, so nothing here can change the
+      # file the publish job receives. That job runs only if the checks below pass.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: ${{ env.SOL_TARBALL }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Fetch OpenCode
+        env:
+          OPENCODE: ${{ inputs.opencode }}
+        run: scripts/live/opencode-cli.sh "$OPENCODE" >> "$GITHUB_PATH"
+      - name: The unit tests ran on the Bun this OpenCode embeds
+        if: inputs.opencode == ''
+        run: |
+          if ! grep -a -q "Bun v$BUN_VERSION (" "$(command -v opencode)"; then
+            echo "::error::the pinned OpenCode embeds another Bun than $BUN_VERSION; update BUN_VERSION in verify.yml"
+            exit 1
+          fi
+      - name: The packed plugin works inside OpenCode
+        run: |
+          scripts/live/verify.sh af-op
+          scripts/live/verify.sh all
+      # OpenCode exits 0 when a plugin fails to load, so the checks above are
+      # only worth something if they fail here.
+      - name: A package with a missing file is rejected
+        run: |
+          mkdir "$RUNNER_TEMP/broken"
+          tar -xzf "$SOL_TARBALL" -C "$RUNNER_TEMP/broken"
+          rm "$RUNNER_TEMP/broken/package/src/config.ts"
+          tar -czf "$RUNNER_TEMP/broken.tgz" -C "$RUNNER_TEMP/broken" package
+          echo "The checks below are expected to fail."
+          if SOL_TARBALL="$RUNNER_TEMP/broken.tgz" scripts/live/verify.sh af-op > "$RUNNER_TEMP/broken.log" 2>&1; then
+            cat "$RUNNER_TEMP/broken.log"
+            echo "::error::the live check accepted a package without src/config.ts"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/broken.log"
+          # It has to fail for the right reason: the session ran, and the plugin was not in it.
+          grep -q "^ok   the session ran to its scripted end" "$RUNNER_TEMP/broken.log"
+          grep -q "^FAIL the write tool offers then_run" "$RUNNER_TEMP/broken.log"
+      # What OpenCode sent and stored in each run, to see why a check failed.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: live-runs
+          path: /tmp/sol-opencode-live-*
+          retention-days: 7

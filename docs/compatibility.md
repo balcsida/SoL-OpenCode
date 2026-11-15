@@ -150,7 +150,7 @@ See [configuration.md](configuration.md).
 
 `tests/fake-opencode.ts` implements only the plugin-context members SoL-OpenCode uses. It reproduces the host behaviour listed above: hook order on one mutable event, input repair for closed schemas, the recorded call, Code Mode-only plugin tools, typed errors for failed built-ins and rejected plugin tools, `session.compact` and `session.synthetic` as recorded inbox items, and message shapes. Every test is zero-spend.
 
-`scripts/live/verify.sh` runs real `opencode run --standalone` sessions in a scratch project. It loads this checkout from `.opencode/plugins/` and points it at a scripted OpenAI-compatible endpoint on localhost. It logs every request the endpoint receives, and a diagnostic plugin compares each outgoing request with the persisted history. See [verification.md](verification.md) for the 2.2.6 results.
+`scripts/live/verify.sh` runs real `opencode run --standalone` sessions in a scratch project. It packs the plugin, loads the extracted tarball through a `plugins` entry, and points it at a scripted OpenAI-compatible endpoint on localhost. It logs every request the endpoint receives, a diagnostic plugin compares each outgoing request with the persisted history, and `scripts/live/check.mjs` fails the run unless every enabled mechanism did its job. See [verification.md](verification.md) for the 2.2.6 results.
 
 The live checks verify runtime compatibility, not provider behaviour or token savings on real tasks.
 
